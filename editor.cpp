@@ -381,11 +381,13 @@ CaptureEditor::~CaptureEditor() {
     const QString runtime =
         QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
     if ((!runtime.isEmpty() && snapshotPath_.startsWith(runtime)) ||
-        snapshotPath_.startsWith(QStringLiteral("/tmp/omasnap"))) {
+        snapshotPath_.contains(QStringLiteral("/omasnap"))) {
       QFile::remove(snapshotPath_);
     }
   }
 }
+
+
 
 bool CaptureEditor::eventFilter(QObject *watched, QEvent *event) {
 

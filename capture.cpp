@@ -13,12 +13,18 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 
 #include <QUrl>
 #include <algorithm>
 #include <cmath>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+
 
 bool loadCaptureFonts() {
   static const int fontId =
@@ -89,13 +95,36 @@ bool copyToWaylandClipboard(const QString &mimeType, const QByteArray &payload,
   return false;
 }
 
+bool makeSecureDir(const QString &dirPath) {
+  if (dirPath.isEmpty())
+    return false;
+  const QDir dir(dirPath);
+  if (dir.exists())
+    return true;
+  const QString parent = QFileInfo(dirPath).dir().absolutePath();
+  if (!parent.isEmpty() && parent != dirPath && !QDir(parent).exists()) {
+    if (!makeSecureDir(parent))
+      return false;
+  }
+  return ::mkdir(dirPath.toLocal8().constData(), 0700) == 0 || dir.exists();
+}
+
+
 QString runtimePath(const QString &name) {
   QString runtime =
       QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
   if (runtime.isEmpty())
-    runtime = QDir::tempPath();
+    runtime = QDir(QDir::tempPath())
+                  .filePath(QStringLiteral("omasnap-%1").arg(::getuid()));
+  else
+    runtime = QDir(runtime).filePath(QStringLiteral("omasnap"));
+
+  makeSecureDir(runtime);
   return QDir(runtime).filePath(name);
 }
+
+
+
 
 QString screenshotTargetPath(QString &error) {
   QString root = qEnvironmentVariable("OMASNAP_SCREENSHOT_DIR");
@@ -537,9 +566,10 @@ QString moveSnapshotToScreenshots(const QString &sourcePath, QString &error) {
 }
 
 QString temporarySnapshotPath() {
-  return QDir(QStringLiteral("/tmp/omasnap"))
-      .filePath(QStringLiteral("snapshot-%1.png")
-                    .arg(QCoreApplication::applicationPid()));
+  const quint32 nonce = QRandomGenerator::global()->generate();
+  return runtimePath(QStringLiteral("snapshot-%1-%2.png")
+                         .arg(QCoreApplication::applicationPid())
+                         .arg(nonce, 8, 16, QChar('0')));
 }
 
 bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
@@ -550,17 +580,35 @@ bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
   if (path.isEmpty())
     path = temporarySnapshotPath();
   const QDir root = QFileInfo(path).absoluteDir();
-  if (!QDir().mkpath(root.absolutePath())) {
+  if (!makeSecureDir(root.absolutePath())) {
     error = QStringLiteral("Could not create snapshot directory: %1")
                 .arg(root.absolutePath());
     return false;
   }
-  if (!image.save(path, "PNG")) {
+
+  const int fd = ::open(path.toLocal8().constData(),
+                        O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) {
+    error = QStringLiteral("Could not create secure snapshot file: %1").arg(path);
+    return false;
+  }
+
+  QFile file;
+  if (!file.open(fd, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle)) {
+    ::close(fd);
+    error = QStringLiteral("Could not open snapshot file handle: %1").arg(path);
+    return false;
+  }
+
+  if (!image.save(&file, "PNG")) {
     error = QStringLiteral("Could not save temporary snapshot: %1").arg(path);
     return false;
   }
   return true;
 }
+
+
+
 
 bool copyTextToClipboard(const QString &text, QString &error) {
   if (text.isEmpty()) {
