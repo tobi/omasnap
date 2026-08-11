@@ -1,3 +1,5 @@
+/** @fileoverview Exercises capture editor behavior without a live compositor.
+ */
 #include "capture.hpp"
 #include "editor.hpp"
 
@@ -10,6 +12,7 @@
 #include <QWheelEvent>
 #include <QtTest/QTest>
 
+/** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
   QApplication application(argc, argv);
   if (!loadCaptureFonts())
@@ -409,6 +412,34 @@ int main(int argc, char **argv) {
       QColor(QStringLiteral("#0a84ff")))
     return 58;
 
+  CaptureEditor previewClipEditor(capture);
+  previewClipEditor.resize(800, 600);
+  previewClipEditor.show();
+  application.processEvents();
+  QTest::mousePress(&previewClipEditor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(100, 100));
+  QTest::mouseMove(&previewClipEditor, QPoint(650, 470), 20);
+  QTest::mouseRelease(&previewClipEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(650, 470));
+  QTest::keyClick(&previewClipEditor, Qt::Key_C);
+  QTest::mouseClick(&previewClipEditor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(640, 300));
+  QTest::keyClick(&previewClipEditor, Qt::Key_B);
+  QTest::mousePress(&previewClipEditor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(682, 305));
+  QTest::mouseMove(&previewClipEditor, QPoint(500, 305), 20);
+  QTest::mouseRelease(&previewClipEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(500, 305));
+  application.processEvents();
+  const QImage clippedPreview = previewClipEditor.grab().toImage();
+  for (int y = 270; y <= 330; ++y) {
+    for (int x = 690; x <= 760; ++x) {
+      const QColor pixel = clippedPreview.pixelColor(x, y);
+      if (pixel.red() > 240 && pixel.green() < 96 && pixel.blue() < 128)
+        return 66;
+    }
+  }
+
   QVector<Annotation> annotations;
   annotations.push_back({Annotation::Kind::Arrow,
                          {50, 60},
@@ -461,6 +492,31 @@ int main(int argc, char **argv) {
   if (rendered.isNull() || rendered.size() != QSize(628, 428) ||
       !rendered.save(outputRoot + QStringLiteral("-render.png"), "PNG"))
     return 3;
+
+  CaptureData clippingCapture;
+  clippingCapture.monitor.scale = 1.0;
+  clippingCapture.source = QImage(100, 100, QImage::Format_RGB32);
+  clippingCapture.source.fill(Qt::white);
+  clippingCapture.preview = clippingCapture.source;
+  Annotation croppedOut;
+  croppedOut.kind = Annotation::Kind::Rectangle;
+  croppedOut.start = {120, 20};
+  croppedOut.end = {150, 60};
+  croppedOut.color = QColor(QStringLiteral("#ff00ff"));
+  croppedOut.size = 4;
+  const QImage clippedExport =
+      renderCapture(clippingCapture, QRectF(0, 0, 100, 100), {croppedOut},
+                    BackgroundStyle::Aurora);
+  const QRect exportedImageBounds(64, 64, 100, 100);
+  for (int y = 0; y < clippedExport.height(); ++y) {
+    for (int x = 0; x < clippedExport.width(); ++x) {
+      if (exportedImageBounds.contains(x, y))
+        continue;
+      const QColor pixel = clippedExport.pixelColor(x, y);
+      if (pixel.red() > 240 && pixel.green() < 32 && pixel.blue() > 240)
+        return 65;
+    }
+  }
 
   CaptureData highDpiCapture = capture;
   highDpiCapture.monitor.scale = 2.0;

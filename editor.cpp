@@ -1,3 +1,5 @@
+/** @fileoverview Handles screenshot selection, annotation, and editor drawing.
+ */
 #include "editor.hpp"
 
 #include <QtConcurrent/QtConcurrentRun>
@@ -1778,6 +1780,8 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   painter.save();
   painter.translate(image.topLeft());
   painter.scale(editScale(), editScale());
+  painter.save();
+  painter.setClipRect(QRectF(QPointF(), selection_.size()));
   for (int index = 0; index < annotations_.size(); ++index) {
     if (index != editingAnnotation_)
       paintAnnotation(painter, annotations_.at(index));
@@ -1808,6 +1812,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     preview.size = annotationSize_;
     paintAnnotation(painter, preview);
   }
+  painter.restore();
   if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
       selectedAnnotation_ != editingAnnotation_) {
     const Annotation &selected = annotations_.at(selectedAnnotation_);

@@ -1,3 +1,4 @@
+/** @fileoverview Captures, renders, saves, and shares screenshots. */
 #include "capture.hpp"
 
 #include <QCoreApplication>
@@ -500,6 +501,7 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
   painter.save();
   painter.translate(marginX, marginY);
   painter.scale(scaleX, scaleY);
+  painter.setClipRect(QRectF(QPointF(), selection.size()));
   for (const Annotation &annotation : annotations)
     drawAnnotation(painter, annotation);
   painter.restore();
