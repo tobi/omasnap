@@ -17,6 +17,8 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
   editable Neucha text.
 - Per-layer preset or custom colors, undo/redo history, OCR-region capture,
   mesh-gradient backdrops, and rendered drop shadows.
+- Pin a finished capture on screen as a floating always-on-top window (`omasnap-pin`),
+  independent of the capture process so new captures keep working.
 - Crash-resistant working snapshots under `/tmp/omasnap/snapshot-<pid>.png`, written
   immediately after selection and overwritten after every completed edit. Saving moves
   that file into `~/Pictures/Screenshots`; clipboard output streams the same PNG.
@@ -199,7 +201,50 @@ Install the corresponding Tesseract language data before adding a language to
 | `Ctrl+C` | Copy PNG only |
 | `Ctrl+S` | Save PNG only |
 | `Enter` | Copy and save |
+| `P` | Pin the capture on screen and close the editor |
 | `Esc` | Return to Select; press again to close |
+
+### Pinned captures
+
+`P` renders the current capture, writes it to `/tmp/omasnap/pin-<pid>-<n>.png`, and hands
+it to `omasnap-pin` — a separate binary that deliberately runs without
+`QT_WAYLAND_SHELL_INTEGRATION`, so the pin is a plain toplevel the compositor can float,
+stack, and move like any other window. Pinning neither touches the clipboard nor writes to
+the screenshot directory; it is a fourth output alongside copy, save, and copy-and-save.
+
+`P` closes the editor, which releases the single-instance lock so the next capture starts
+immediately. Pins from separate captures accumulate; each one is an independent process.
+
+| Input on a pin | Action |
+|---|---|
+| Drag body | Move (compositor-driven `startSystemMove`) |
+| Wheel, bottom-right grip | Resize, aspect preserved |
+| `Ctrl+C` | Copy the pinned PNG to the clipboard |
+| `Esc`, middle-click, hover close button | Close |
+
+`Ctrl+C` copies through `wl-copy` rather than `QClipboard`, so the image stays on the
+clipboard after the pin is closed, and it copies the capture at full resolution regardless
+of how small the pin has been scaled.
+
+Recommended window rules, in the Lua config syntax these were tested with:
+
+```lua
+hl.window_rule({
+  match = { class = "^omasnap-pin$" },
+  float = true,
+  pin = true,
+  no_initial_focus = true,
+  no_dim = true,
+  keep_aspect_ratio = true,
+  opacity = "1 1 override",
+})
+```
+
+The `override` on the opacity rule matters: without it a configured
+`decoration:inactive_opacity` still multiplies through, and an unfocused pin then shows
+colors that no longer match the capture. In a legacy `hyprland.conf` the equivalents are
+`float`, `pin`, `noinitialfocus`, `nodim`, `keepaspectratio` and
+`opacity 1.0 1.0 override` on `class:^omasnap-pin$`.
 
 Creation tools return to Select after one placement without selecting the new layer. In
 Select mode, arrows and lines show only their two endpoint handles; other layers show a
