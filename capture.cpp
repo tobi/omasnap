@@ -216,7 +216,8 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation) {
     return;
   }
 
-  if (annotation.kind == Annotation::Kind::Freehand) {
+  if (annotation.kind == Annotation::Kind::Freehand ||
+      annotation.kind == Annotation::Kind::Highlighter) {
     if (annotation.points.size() < 2)
       return;
     QPainterPath stroke(annotation.points.first());
@@ -227,6 +228,15 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation) {
     }
     stroke.lineTo(annotation.points.last());
     painter.setBrush(Qt::NoBrush);
+    if (annotation.kind == Annotation::Kind::Highlighter) {
+      QColor ink = annotation.color;
+      if (ink.alpha() >= 255)
+        ink.setAlpha(120);
+      const qreal highlightWidth =
+          std::max<qreal>(6.0, annotation.size * 3.0);
+      painter.setPen(QPen(ink, highlightWidth, Qt::SolidLine, Qt::RoundCap,
+                          Qt::RoundJoin));
+    }
     painter.drawPath(stroke);
     return;
   }

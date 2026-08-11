@@ -208,7 +208,8 @@ int main(int argc, char **argv) {
     return 48;
   const QImage beforeTextSnapshot(snapshotPath);
   QTest::keyClick(&editor, Qt::Key_T);
-  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(320, 133));
+  // Text size panel under the Text toolbar button (shifted by Highlighter).
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(341, 133));
   QWheelEvent textSizeWheel(QPointF(360, 320), QPointF(360, 320), {}, {0, -120},
                             Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase,
                             false);
@@ -281,13 +282,16 @@ int main(int argc, char **argv) {
   application.processEvents();
   if (QImage(snapshotPath) == beforeBackdropSnapshot)
     return 55;
-  QTest::mouseMove(&editor, QPoint(378, 92), 20);
+  // Palette toolbar button (index 8 after Highlighter was inserted).
+  QTest::mouseMove(&editor, QPoint(398, 92), 20);
   application.processEvents();
   if (!editor.grab().save(outputRoot + QStringLiteral("-palette.png"), "PNG"))
     return 14;
-  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(460, 134));
+  // Custom color control in the open palette strip.
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(470, 134));
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(320, 200));
-  QTest::mouseMove(&editor, QPoint(178, 92), 20);
+  // Freehand toolbar button.
+  QTest::mouseMove(&editor, QPoint(198, 92), 20);
   application.processEvents();
   if (editor.cursor().shape() != Qt::PointingHandCursor)
     return 12;
@@ -432,6 +436,12 @@ int main(int argc, char **argv) {
   freehand.size = 4;
   freehand.points = {{40, 170}, {110, 145}, {165, 185}, {225, 150}};
   annotations.push_back(std::move(freehand));
+  Annotation highlighter;
+  highlighter.kind = Annotation::Kind::Highlighter;
+  highlighter.color = QColor(QStringLiteral("#ffd60a"));
+  highlighter.size = 5;
+  highlighter.points = {{50, 210}, {140, 205}, {220, 215}, {300, 200}};
+  annotations.push_back(std::move(highlighter));
   annotations.push_back({Annotation::Kind::Marker,
                          {260, 180},
                          {},

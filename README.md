@@ -13,9 +13,10 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 - Clean window-surface capture through Wayland image-copy protocols. A failed native
   capture stays in the window picker; Omasnap never substitutes a crop of the desktop.
 - Select/move/resize layers, mouse-wheel scaling, and eight external recropping handles.
-- Arrows, straight lines, smoothed freehand strokes, rectangles, numbered markers, and
-  editable Neucha text.
-- Per-layer preset or custom colors, undo/redo history, OCR-region capture,
+- Arrows, straight lines, smoothed freehand strokes, translucent highlighter strokes,
+  rectangles, numbered markers, and editable Neucha text.
+- Per-layer preset or custom colors (including highlighter ink), undo/redo history,
+  OCR-region capture,
   mesh-gradient backdrops, and rendered drop shadows.
 - Crash-resistant working snapshots under `/tmp/omasnap/snapshot-<pid>.png`, written
   immediately after selection and overwritten after every completed edit. Saving moves

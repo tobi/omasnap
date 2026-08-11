@@ -34,7 +34,15 @@ struct CaptureData {
 enum class BackgroundStyle { None, Aurora, Sunset, Lagoon, Violet };
 
 struct Annotation {
-  enum class Kind { Arrow, Line, Freehand, Marker, Rectangle, Text };
+  enum class Kind {
+    Arrow,
+    Line,
+    Freehand,
+    Highlighter,
+    Marker,
+    Rectangle,
+    Text
+  };
 
   Kind kind = Kind::Arrow;
   QPointF start;
