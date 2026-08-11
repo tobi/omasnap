@@ -1,5 +1,6 @@
 #include "capture.hpp"
 #include "editor.hpp"
+
 #include <LayerShellQt/Window>
 
 #include <QApplication>
@@ -9,18 +10,64 @@
 #include <QGuiApplication>
 #include <QLockFile>
 #include <QScreen>
+#include <QSocketNotifier>
 #include <QStandardPaths>
 #include <QWindow>
 
+#include <csignal>
+#include <sys/socket.h>
+#include <unistd.h>
+
+namespace {
+class PosixSignalNotifier final : public QObject {
+public:
+  explicit PosixSignalNotifier(QObject *parent = nullptr) : QObject(parent) {
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds_) != 0)
+      return;
+
+    struct sigaction sa{};
+    sa.sa_handler = [](int) {
+      char a = 1;
+      ::write(fds_[0], &a, sizeof(a));
+    };
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    ::sigaction(SIGINT, &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
+
+    notifier_ = new QSocketNotifier(fds_[1], QSocketNotifier::Read, this);
+    connect(notifier_, &QSocketNotifier::activated, this, [this] {
+      notifier_->setEnabled(false);
+      char a;
+      ::read(fds_[1], &a, sizeof(a));
+      QCoreApplication::quit();
+    });
+  }
+
+  ~PosixSignalNotifier() override {
+    for (int &fd : fds_) {
+      if (fd >= 0) {
+        ::close(fd);
+        fd = -1;
+      }
+    }
+  }
+
+private:
+  static inline int fds_[2]{-1, -1};
+  QSocketNotifier *notifier_ = nullptr;
+};
+} // namespace
+
 int main(int argc, char **argv) {
-  QCoreApplication::setApplicationName(
-      QStringLiteral("omasnap"));
+  QCoreApplication::setApplicationName(QStringLiteral("omasnap"));
   QCoreApplication::setApplicationVersion(
       QString::fromLatin1(OMASNAP_VERSION));
   QCoreApplication::setOrganizationName(QStringLiteral("Omarchy"));
   qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
   QGuiApplication::setDesktopFileName(QStringLiteral("omasnap"));
   QApplication application(argc, argv);
+  PosixSignalNotifier signalNotifier(&application);
 
   QCommandLineParser parser;
   parser.setApplicationDescription(

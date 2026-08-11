@@ -20,6 +20,8 @@ public:
   explicit CaptureEditor(CaptureData capture,
                          CaptureMode mode = CaptureMode::Region,
                          QWidget *parent = nullptr);
+  ~CaptureEditor() override;
+
 
 protected:
   bool eventFilter(QObject *watched, QEvent *event) override;

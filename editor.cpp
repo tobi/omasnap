@@ -7,6 +7,7 @@
 #include <QCursor>
 #include <QDebug>
 #include <QEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFontMetrics>
@@ -16,7 +17,9 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
+#include <QStandardPaths>
 #include <QTimer>
+
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -373,7 +376,19 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   updatePointerCursor();
 }
 
+CaptureEditor::~CaptureEditor() {
+  if (!snapshotPath_.isEmpty() && QFile::exists(snapshotPath_)) {
+    const QString runtime =
+        QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if ((!runtime.isEmpty() && snapshotPath_.startsWith(runtime)) ||
+        snapshotPath_.startsWith(QStringLiteral("/tmp/omasnap"))) {
+      QFile::remove(snapshotPath_);
+    }
+  }
+}
+
 bool CaptureEditor::eventFilter(QObject *watched, QEvent *event) {
+
   if (watched == textEditor_ && event->type() == QEvent::KeyPress) {
     auto *key = static_cast<QKeyEvent *>(event);
     if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
