@@ -63,6 +63,8 @@ void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
 [[nodiscard]] QString moveSnapshotToScreenshots(const QString &sourcePath,
                                                 QString &error);
 [[nodiscard]] QString temporarySnapshotPath();
+[[nodiscard]] QString pinnedSnapshotPath(int index);
+void prunePinnedSnapshots();
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
                                          QString &error);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);

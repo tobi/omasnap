@@ -58,6 +58,17 @@ target_link_libraries(omasnap PRIVATE
   PkgConfig::WaylandClient
 )
 
+qt_add_executable(omasnap-pin
+  pin.cpp
+)
+target_compile_features(omasnap-pin PRIVATE cxx_std_23)
+target_compile_options(omasnap-pin PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(omasnap-pin PRIVATE
+  Qt6::Core
+  Qt6::Gui
+  Qt6::Widgets
+)
+
 qt_add_executable(omasnap-smoke
   editor-smoke.cpp
   capture.cpp
@@ -84,7 +95,7 @@ target_link_libraries(omasnap-smoke PRIVATE
   PkgConfig::WaylandClient
 )
 
-install(TARGETS omasnap
+install(TARGETS omasnap omasnap-pin
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
 install(FILES assets/OFL.txt

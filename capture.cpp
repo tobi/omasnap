@@ -97,6 +97,8 @@ QString runtimePath(const QString &name) {
   return QDir(runtime).filePath(name);
 }
 
+QDir snapshotRoot() { return QDir(QStringLiteral("/tmp/omasnap")); }
+
 QString screenshotTargetPath(QString &error) {
   QString root = qEnvironmentVariable("OMASNAP_SCREENSHOT_DIR");
   if (root.isEmpty())
@@ -537,9 +539,24 @@ QString moveSnapshotToScreenshots(const QString &sourcePath, QString &error) {
 }
 
 QString temporarySnapshotPath() {
-  return QDir(QStringLiteral("/tmp/omasnap"))
-      .filePath(QStringLiteral("snapshot-%1.png")
-                    .arg(QCoreApplication::applicationPid()));
+  return snapshotRoot().filePath(QStringLiteral("snapshot-%1.png")
+                                     .arg(QCoreApplication::applicationPid()));
+}
+
+QString pinnedSnapshotPath(int index) {
+  return snapshotRoot().filePath(QStringLiteral("pin-%1-%2.png")
+                                     .arg(QCoreApplication::applicationPid())
+                                     .arg(index));
+}
+
+void prunePinnedSnapshots() {
+  const QDateTime cutoff = QDateTime::currentDateTime().addDays(-1);
+  const QFileInfoList stale =
+      snapshotRoot().entryInfoList({QStringLiteral("pin-*.png")}, QDir::Files);
+  for (const QFileInfo &entry : stale) {
+    if (entry.lastModified() < cutoff)
+      QFile::remove(entry.absoluteFilePath());
+  }
 }
 
 bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
