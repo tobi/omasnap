@@ -1,5 +1,8 @@
+/** @fileoverview Exercises capture editor behavior without a live compositor.
+ */
 #include "capture.hpp"
 #include "editor.hpp"
+#include "transform-smoke.hpp"
 
 #include <QApplication>
 #include <QDebug>
@@ -10,6 +13,7 @@
 #include <QWheelEvent>
 #include <QtTest/QTest>
 
+/** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
   QApplication application(argc, argv);
   if (!loadCaptureFonts())
@@ -536,6 +540,12 @@ int main(int argc, char **argv) {
       qWarning().noquote() << clipboardError;
       return 64;
     }
+  }
+
+  QString transformError;
+  if (!runTransformSmoke(transformError)) {
+    qWarning().noquote() << transformError;
+    return 67;
   }
   return 0;
 }

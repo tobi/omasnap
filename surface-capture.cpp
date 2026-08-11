@@ -1,3 +1,4 @@
+/** @fileoverview Captures native window surfaces through Wayland protocols. */
 #include "capture.hpp"
 
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
@@ -5,6 +6,7 @@
 #include "ext-image-copy-capture-v1-client-protocol.h"
 
 #include <QImage>
+#include <QTransform>
 
 #include <wayland-client.h>
 
@@ -309,6 +311,35 @@ QImage copyCapturedImage(const CaptureState &state) {
 }
 } // namespace
 
+QImage normalizeWaylandCapture(const QImage &image, std::uint32_t transform) {
+  const auto rotated = [&image](qreal degrees) {
+    return image.transformed(QTransform().rotate(degrees));
+  };
+  const auto flipped = [](const QImage &source) {
+    return source.transformed(QTransform().scale(-1, 1));
+  };
+  switch (transform) {
+  case WL_OUTPUT_TRANSFORM_NORMAL:
+    return image;
+  case WL_OUTPUT_TRANSFORM_90:
+    return rotated(90);
+  case WL_OUTPUT_TRANSFORM_180:
+    return rotated(180);
+  case WL_OUTPUT_TRANSFORM_270:
+    return rotated(-90);
+  case WL_OUTPUT_TRANSFORM_FLIPPED:
+    return flipped(image);
+  case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+    return flipped(rotated(90));
+  case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+    return flipped(rotated(180));
+  case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+    return flipped(rotated(-90));
+  default:
+    return {};
+  }
+}
+
 bool captureWindowSurface(const WindowTarget &window, QImage &image,
                           QString &error) {
   if (window.stableId.isEmpty()) {
@@ -377,14 +408,14 @@ bool captureWindowSurface(const WindowTarget &window, QImage &image,
           "Compositor could not capture the selected window surface");
     return false;
   }
-  if (state.transform != WL_OUTPUT_TRANSFORM_NORMAL) {
-    error = QStringLiteral("Unsupported transform in native window capture");
+  const QImage captured = copyCapturedImage(state);
+  if (captured.isNull()) {
+    error = QStringLiteral("Could not decode native window capture");
     return false;
   }
-
-  image = copyCapturedImage(state);
+  image = normalizeWaylandCapture(captured, state.transform);
   if (image.isNull()) {
-    error = QStringLiteral("Could not decode native window capture");
+    error = QStringLiteral("Unsupported transform in native window capture");
     return false;
   }
   return true;

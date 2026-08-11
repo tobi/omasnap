@@ -1,4 +1,7 @@
+/** @fileoverview Declares screenshot capture, rendering, and output types. */
 #pragma once
+
+#include <cstdint>
 
 #include <QColor>
 #include <QImage>
@@ -51,6 +54,9 @@ struct Annotation {
 [[nodiscard]] bool captureFocusedMonitor(CaptureData &capture, QString &error);
 [[nodiscard]] bool captureWindowSurface(const WindowTarget &window,
                                         QImage &image, QString &error);
+/** Returns an upright image for captured Wayland buffer contents. */
+[[nodiscard]] QImage normalizeWaylandCapture(const QImage &image,
+                                             std::uint32_t transform);
 [[nodiscard]] QImage renderCapture(const CaptureData &capture,
                                    const QRectF &selection,
                                    const QVector<Annotation> &annotations,

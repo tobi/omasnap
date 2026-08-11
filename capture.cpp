@@ -1,3 +1,4 @@
+/** @fileoverview Captures, renders, saves, and shares screenshots. */
 #include "capture.hpp"
 
 #include <QCoreApplication>
@@ -142,7 +143,7 @@ bool parseMonitor(const QByteArray &json, MonitorInfo &monitor,
         static_cast<int>(std::floor(rawWidth / std::max<qreal>(scale, 0.01)));
     int logicalHeight =
         static_cast<int>(std::floor(rawHeight / std::max<qreal>(scale, 0.01)));
-    if (transform == 1 || transform == 3)
+    if (transform == 1 || transform == 3 || transform == 5 || transform == 7)
       std::swap(logicalWidth, logicalHeight);
 
     monitor.name = object.value(QStringLiteral("name")).toString();

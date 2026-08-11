@@ -60,6 +60,8 @@ target_link_libraries(omasnap PRIVATE
 
 qt_add_executable(omasnap-smoke
   editor-smoke.cpp
+  transform-smoke.cpp
+  transform-smoke.hpp
   capture.cpp
   capture.hpp
   surface-capture.cpp
