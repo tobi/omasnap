@@ -100,7 +100,7 @@ Install the complete build/runtime dependency set:
 sudo pacman -S --needed \
   base-devel cmake ninja pkgconf qt6-base layer-shell-qt \
   wayland wayland-protocols hyprland grim wl-clipboard \
-  tesseract tesseract-data-eng
+  tesseract tesseract-data-eng tesseract-data-tha
 ```
 
 Build and install:
@@ -159,10 +159,14 @@ Environment overrides:
 ```bash
 OMASNAP_SCREENSHOT_DIR="$HOME/Pictures/Captures" omasnap
 OMASNAP_OCR_LANGS="eng+deu" omasnap
+# Thai plus English:
+OMASNAP_OCR_LANGS="tha+eng" omasnap
 ```
 
 Install the corresponding Tesseract language data before adding a language to
-`OMASNAP_OCR_LANGS`.
+`OMASNAP_OCR_LANGS`. When unset, omasnap falls back to Omarchy's
+`OMARCHY_OCR_LANGS` (which commonly includes the user's script, e.g.
+`tha+eng`), then to `eng`.
 
 ## Controls
 

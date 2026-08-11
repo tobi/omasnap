@@ -13,7 +13,7 @@ fi
 omarchy-pkg-add \
   base-devel cmake ninja pkgconf qt6-base layer-shell-qt \
   wayland wayland-protocols grim wl-clipboard \
-  tesseract tesseract-data-eng
+  tesseract tesseract-data-eng tesseract-data-tha
 
 cmake -S "$repo_dir" -B "$build_dir" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \

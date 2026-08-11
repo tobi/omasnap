@@ -491,6 +491,21 @@ int main(int argc, char **argv) {
   if (!recognizeText(ocrImage, ocrError)
            .contains(QStringLiteral("OCR smoke test 42")))
     return 5;
+  const QByteArray savedOmasnapLangs = qgetenv("OMASNAP_OCR_LANGS");
+  const QByteArray savedOmarchyLangs = qgetenv("OMARCHY_OCR_LANGS");
+  qputenv("OMASNAP_OCR_LANGS", "");
+  qputenv("OMARCHY_OCR_LANGS", "eng");
+  const QString fallbackOcr = recognizeText(ocrImage, ocrError);
+  if (savedOmasnapLangs.isEmpty())
+    qunsetenv("OMASNAP_OCR_LANGS");
+  else
+    qputenv("OMASNAP_OCR_LANGS", savedOmasnapLangs);
+  if (savedOmarchyLangs.isEmpty())
+    qunsetenv("OMARCHY_OCR_LANGS");
+  else
+    qputenv("OMARCHY_OCR_LANGS", savedOmarchyLangs);
+  if (!fallbackOcr.contains(QStringLiteral("OCR smoke test 42")))
+    return 65;
   QTest::mouseMove(&editor, QPoint(400, 300), 20);
   QTest::keyClick(&editor, Qt::Key_T);
   QTest::keyClick(&editor, Qt::Key_Escape);

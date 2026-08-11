@@ -585,8 +585,10 @@ QString recognizeText(const QImage &image, QString &error) {
     return {};
   }
 
-  const QString languages =
-      qEnvironmentVariable("OMASNAP_OCR_LANGS", QStringLiteral("eng"));
+  QString languages = qEnvironmentVariable("OMASNAP_OCR_LANGS");
+  if (languages.isEmpty())
+    languages = qEnvironmentVariable("OMARCHY_OCR_LANGS", QStringLiteral("eng"));
+  languages = languages.trimmed();
   const ProcessResult result = runProcess(
       QStringLiteral("tesseract"),
       {path, QStringLiteral("stdout"), QStringLiteral("--oem"),
@@ -596,8 +598,8 @@ QString recognizeText(const QImage &image, QString &error) {
        QStringLiteral("preserve_interword_spaces=1")},
       {}, 30000);
   if (!result.finished || result.exitCode != 0) {
-    error = QStringLiteral("OCR failed: %1")
-                .arg(QString::fromUtf8(result.error).trimmed());
+    error = QStringLiteral("OCR failed for languages %1: %2")
+                .arg(languages, QString::fromUtf8(result.error).trimmed());
     return {};
   }
   const QString text = QString::fromUtf8(result.output).trimmed();
