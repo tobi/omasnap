@@ -281,13 +281,13 @@ int main(int argc, char **argv) {
   application.processEvents();
   if (QImage(snapshotPath) == beforeBackdropSnapshot)
     return 55;
-  QTest::mouseMove(&editor, QPoint(378, 92), 20);
+  QTest::mouseMove(&editor, QPoint(358, 92), 20);
   application.processEvents();
   if (!editor.grab().save(outputRoot + QStringLiteral("-palette.png"), "PNG"))
     return 14;
-  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(460, 134));
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(440, 134));
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(320, 200));
-  QTest::mouseMove(&editor, QPoint(178, 92), 20);
+  QTest::mouseMove(&editor, QPoint(158, 92), 20);
   application.processEvents();
   if (editor.cursor().shape() != Qt::PointingHandCursor)
     return 12;

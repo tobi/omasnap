@@ -6,7 +6,9 @@
 #include <QClipboard>
 #include <QCursor>
 #include <QDebug>
+#include <QDir>
 #include <QEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFontMetrics>
@@ -15,6 +17,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QProcess>
 #include <QScreen>
 #include <QTimer>
 #include <QWheelEvent>
@@ -29,7 +32,17 @@ constexpr std::array<const char *, 6> kColorNames{
     "#ff375f", "#ff9f0a", "#ffd60a", "#30d158", "#0a84ff", "#bf5af2"};
 constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
-constexpr qreal kToolbarWidth = 640;
+constexpr qreal kToolbarWidth = 680;
+
+// Prefer the sibling binary so an uninstalled build tree pins with its own pin
+// viewer instead of an older installed one.
+QString pinProgram() {
+  const QString sibling = QDir(QCoreApplication::applicationDirPath())
+                              .filePath(QStringLiteral("omasnap-pin"));
+  if (QFileInfo::exists(sibling))
+    return sibling;
+  return QStringLiteral("omasnap-pin");
+}
 
 bool hasEndpointHandles(Annotation::Kind kind) {
   return kind == Annotation::Kind::Arrow || kind == Annotation::Kind::Line ||
@@ -223,6 +236,10 @@ void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
     tray.lineTo(19, 20);
     tray.lineTo(19, 18);
     painter.drawPath(tray);
+  } else if (action == QStringLiteral("pin")) {
+    painter.drawRoundedRect(QRectF(8, 4, 8, 6), 2, 2);
+    painter.drawLine(QPointF(5, 10), QPointF(19, 10));
+    painter.drawLine(QPointF(12, 10), QPointF(12, 20));
   } else if (action == QStringLiteral("close")) {
     painter.drawLine(QPointF(6, 6), QPointF(18, 18));
     painter.drawLine(QPointF(18, 6), QPointF(6, 18));
@@ -734,6 +751,8 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
   add(36, QStringLiteral("undo"), {}, QStringLiteral("Undo · Ctrl+Z"));
   add(36, QStringLiteral("redo"), {},
       QStringLiteral("Redo · Ctrl+Shift+Z / Ctrl+Y"));
+  add(36, QStringLiteral("pin"), {},
+      QStringLiteral("Pin on screen · P · Ctrl+C on the pin copies it"));
   add(36, QStringLiteral("copy"), {}, QStringLiteral("Copy only · Ctrl+C"));
   add(40, QStringLiteral("both"), {}, QStringLiteral("Copy and save · Enter"));
   add(36, QStringLiteral("save"), {}, QStringLiteral("Save only · Ctrl+S"));
@@ -840,6 +859,39 @@ void CaptureEditor::persistSnapshot() {
   QString error;
   if (!saveTemporarySnapshot(image, snapshotPath_, error))
     qWarning().noquote() << error;
+}
+
+void CaptureEditor::pinSnapshot() {
+  if (busy_ || selection_.isEmpty())
+    return;
+
+  prunePinnedSnapshots();
+  const QString path = pinnedSnapshotPath(++pinCount_);
+  const QImage image =
+      renderCapture(capture_, selection_, annotations_, backgroundStyle_);
+  QString error;
+  if (!saveTemporarySnapshot(image, path, error)) {
+    setStatus(error);
+    return;
+  }
+
+  // The capture process exports QT_WAYLAND_SHELL_INTEGRATION for its own
+  // layer-shell overlay; the pin needs a plain toplevel the compositor can
+  // float, move and stack like any other window.
+  QProcess pin;
+  QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+  environment.remove(QStringLiteral("QT_WAYLAND_SHELL_INTEGRATION"));
+  pin.setProcessEnvironment(environment);
+  pin.setProgram(pinProgram());
+  pin.setArguments({path});
+  if (!pin.startDetached()) {
+    QFile::remove(path);
+    --pinCount_;
+    setStatus(QStringLiteral("Could not start omasnap-pin"));
+    return;
+  }
+
+  close();
 }
 
 void CaptureEditor::enterEdit(QString status) {
@@ -1112,7 +1164,9 @@ void CaptureEditor::handleToolbar(const QString &action) {
     undoEdit();
   } else if (action == QStringLiteral("redo")) {
     redoEdit();
-  } else if (action == QStringLiteral("copy"))
+  } else if (action == QStringLiteral("pin"))
+    pinSnapshot();
+  else if (action == QStringLiteral("copy"))
     finish(OutputMode::Copy);
   else if (action == QStringLiteral("both"))
     finish(OutputMode::Both);
@@ -1212,6 +1266,9 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     tool_ = Tool::Text;
   } else if (event->key() == Qt::Key_O) {
     tool_ = Tool::Ocr;
+  } else if (event->key() == Qt::Key_P) {
+    pinSnapshot();
+    return;
   } else if (event->key() == Qt::Key_B) {
     recordEdit();
     backgroundStyle_ = static_cast<BackgroundStyle>(
