@@ -174,24 +174,23 @@ void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
     path.lineTo(14, 12);
     path.lineTo(21, 19);
     painter.drawPath(path);
-  } else if (action == QStringLiteral("undo")) {
-    QPainterPath path;
-    path.moveTo(9, 7);
-    path.lineTo(4, 12);
-    path.lineTo(9, 17);
-    path.moveTo(5, 12);
-    path.cubicTo(8, 8, 14, 7, 18, 10);
-    path.cubicTo(20, 12, 20, 15, 19, 17);
-    painter.drawPath(path);
-  } else if (action == QStringLiteral("redo")) {
-    QPainterPath path;
-    path.moveTo(15, 7);
-    path.lineTo(20, 12);
-    path.lineTo(15, 17);
-    path.moveTo(19, 12);
-    path.cubicTo(16, 8, 10, 7, 6, 10);
-    path.cubicTo(4, 12, 4, 15, 5, 17);
-    painter.drawPath(path);
+  } else if (action == QStringLiteral("undo") ||
+             action == QStringLiteral("redo")) {
+    const bool forward = action == QStringLiteral("redo");
+    // Shaft runs along y = 9 into a half-circle that hooks back underneath.
+    const qreal tip = forward ? 20 : 4;
+    const qreal elbow = forward ? 9.5 : 14.5;
+    QPainterPath head;
+    head.moveTo(tip + (forward ? -5 : 5), 4);
+    head.lineTo(tip, 9);
+    head.lineTo(tip + (forward ? -5 : 5), 14);
+    painter.drawPath(head);
+    QPainterPath shaft;
+    shaft.moveTo(tip, 9);
+    shaft.lineTo(elbow, 9);
+    shaft.arcTo(QRectF(elbow - 5.5, 9, 11, 11), 90, forward ? 180 : -180);
+    shaft.lineTo(elbow + (forward ? 3.5 : -3.5), 20);
+    painter.drawPath(shaft);
   } else if (action == QStringLiteral("copy") ||
              action == QStringLiteral("both")) {
     painter.drawRoundedRect(QRectF(8, 8, 12, 12), 2, 2);
