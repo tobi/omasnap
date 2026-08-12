@@ -34,6 +34,8 @@ qt_add_executable(omasnap
   icons.hpp
   pin.cpp
   pin.hpp
+  pin-layout.cpp
+  pin-layout.hpp
   pin-file.cpp
   pin-file.hpp
   capture.cpp
@@ -69,6 +71,10 @@ qt_add_executable(omasnap-smoke
   editor-smoke.cpp
   pin-lifecycle-smoke.cpp
   pin-lifecycle-smoke.hpp
+  pin-layout-smoke.cpp
+  pin-layout-smoke.hpp
+  pin-layout.cpp
+  pin-layout.hpp
   pin-file.cpp
   pin-file.hpp
   pin.cpp

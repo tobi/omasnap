@@ -3,6 +3,7 @@
 #include "capture.hpp"
 #include "editor.hpp"
 #include "pin-lifecycle-smoke.hpp"
+#include "pin-layout-smoke.hpp"
 #include "transform-smoke.hpp"
 
 #include <QApplication>
@@ -154,6 +155,10 @@ int main(int argc, char **argv) {
   if (!runPinLifecycleSmoke(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 71;
+  }
+  if (!runPinLayoutSmoke(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 72;
   }
   if (!runHighlighterRenderingCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;

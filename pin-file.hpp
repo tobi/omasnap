@@ -24,3 +24,24 @@ private:
   int fd_ = -1;
   bool preserve_ = false;
 };
+
+/** Holds the first free layout slot while a pin is active. */
+class PinSlotLock {
+public:
+  /** Claims the first available layout slot. */
+  PinSlotLock();
+  /** Releases the claimed layout slot. */
+  ~PinSlotLock();
+
+  PinSlotLock(const PinSlotLock &) = delete;
+  PinSlotLock &operator=(const PinSlotLock &) = delete;
+
+  /** Returns whether a slot was claimed. */
+  [[nodiscard]] bool isLocked() const;
+  /** Returns the claimed zero-based slot. */
+  [[nodiscard]] int index() const;
+
+private:
+  int fd_ = -1;
+  int index_ = -1;
+};

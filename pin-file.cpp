@@ -3,12 +3,14 @@
 
 #include "capture.hpp"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
 
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 PinSnapshotFile::PinSnapshotFile(QString path)
@@ -41,3 +43,36 @@ PinSnapshotFile::~PinSnapshotFile() {
 bool PinSnapshotFile::isLocked() const { return fd_ >= 0; }
 
 void PinSnapshotFile::preserveForEditor() { preserve_ = true; }
+
+PinSlotLock::PinSlotLock() {
+  const QString runtime = secureRuntimeDirectory();
+  if (runtime.isEmpty())
+    return;
+  for (int candidate = 0; candidate < 1024; ++candidate) {
+    const QString path = QDir(runtime).filePath(
+        QStringLiteral(".pin-slot-%1.lock").arg(candidate));
+    const int fd = ::open(QFile::encodeName(path).constData(),
+                          O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+                          S_IRUSR | S_IWUSR);
+    if (fd < 0)
+      continue;
+    if (::fchmod(fd, S_IRUSR | S_IWUSR) == 0 &&
+        ::flock(fd, LOCK_EX | LOCK_NB) == 0) {
+      fd_ = fd;
+      index_ = candidate;
+      return;
+    }
+    ::close(fd);
+  }
+}
+
+PinSlotLock::~PinSlotLock() {
+  if (fd_ < 0)
+    return;
+  ::flock(fd_, LOCK_UN);
+  ::close(fd_);
+}
+
+bool PinSlotLock::isLocked() const { return fd_ >= 0; }
+
+int PinSlotLock::index() const { return index_; }

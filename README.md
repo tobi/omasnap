@@ -229,8 +229,9 @@ Install the corresponding Tesseract language data before adding a language to
 
 `P` renders the current capture, writes it to a `pin-<pid>-<n>-<random>.png` under the
 runtime snapshot directory, and launches the same `omasnap` executable in detached pin mode.
-The layer-shell surface is anchored 14 logical pixels from the bottom-right corner and
-stays visible on every workspace without compositor window rules. It preserves the image
+The layer-shell surface starts 14 logical pixels from the bottom-right corner, stacking
+active pins upward and wrapping into another column when needed. It stays visible on every
+workspace without compositor window rules. It preserves the image
 aspect ratio, with a maximum width of one third of the screen and a maximum height of one
 half.
 
@@ -247,6 +248,7 @@ Hover the pin to reveal its controls:
 | Link button | Copy the source file path |
 | Copy button, `Ctrl+C` | Copy the full-resolution PNG |
 | Double-wide top-left drag handle | Drag the PNG into a file-capable drop target |
+| Image background drag | Move the pin; it stays fully inside the screen |
 | Wheel | Resize within the screen caps, preserving aspect ratio |
 | Close button, `Esc`, middle-click | Close |
 

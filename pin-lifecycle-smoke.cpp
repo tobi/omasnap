@@ -10,12 +10,32 @@
 #include <QFileInfo>
 #include <QImage>
 
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
 
 /** Verifies pin names, ownership, cleanup, preservation, and pruning. */
 bool runPinLifecycleSmoke(QString &error) {
+  int expectedReusedSlot = -1;
+  {
+    PinSlotLock first;
+    PinSlotLock second;
+    if (!first.isLocked() || !second.isLocked() ||
+        first.index() == second.index()) {
+      error = QStringLiteral("Active pins did not claim distinct slots");
+      return false;
+    }
+    expectedReusedSlot = std::min(first.index(), second.index());
+  }
+  {
+    PinSlotLock reused;
+    if (!reused.isLocked() || reused.index() != expectedReusedSlot) {
+      error = QStringLiteral("Released pin slot was not reused");
+      return false;
+    }
+  }
+
   const QString firstPath = pinnedSnapshotPath(987654);
   const QString secondPath = pinnedSnapshotPath(987654);
   if (firstPath.isEmpty() || secondPath.isEmpty() || firstPath == secondPath) {
