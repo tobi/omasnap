@@ -35,7 +35,7 @@ constexpr std::array<const char *, 6> kColorNames{
     "#ff375f", "#ff9f0a", "#ffd60a", "#30d158", "#0a84ff", "#bf5af2"};
 constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
-constexpr qreal kToolbarWidth = 720;
+constexpr qreal kToolbarWidth = 760;
 constexpr qreal kMinimumSpotlightExtent = 16;
 
 qreal toolbarScale(qreal availableWidth) {
@@ -1124,6 +1124,7 @@ void CaptureEditor::handleToolbar(const QString &action) {
     tool_ = Tool::Highlighter;
   else if (action == QStringLiteral("tool-spotlight")) {
     tool_ = Tool::Spotlight;
+    selectedAnnotation_ = -1;
     spotlightShapePanelOpen_ = true;
     colorPaletteOpen_ = false;
     customColorPickerOpen_ = false;
@@ -1268,6 +1269,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     tool_ = Tool::Highlighter;
   } else if (event->key() == Qt::Key_S) {
     tool_ = Tool::Spotlight;
+    selectedAnnotation_ = -1;
     spotlightShapePanelOpen_ = true;
     colorPaletteOpen_ = false;
     customColorPickerOpen_ = false;
@@ -1929,9 +1931,17 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   QVector<Annotation> spotlightAnnotations = annotations_;
   if (hasDragPreview && dragPreview.kind == Annotation::Kind::Spotlight)
     spotlightAnnotations.push_back(dragPreview);
+  painter.save();
+  QPainterPath spotlightClip;
+  const qreal spotlightClipRadius =
+      hasBackground ? 10.0 / std::max<qreal>(editScale(), 0.01) : 0.0;
+  spotlightClip.addRoundedRect(QRectF(QPointF(), selection_.size()),
+                               spotlightClipRadius, spotlightClipRadius);
+  painter.setClipPath(spotlightClip, Qt::IntersectClip);
   paintSpotlights(painter, capture_.source,
                   QRectF(QPointF(), selection_.size()), sourceRect(selection_),
                   spotlightAnnotations);
+  painter.restore();
   for (int index = 0; index < annotations_.size(); ++index) {
     if (index != editingAnnotation_)
       paintAnnotation(painter, annotations_.at(index));

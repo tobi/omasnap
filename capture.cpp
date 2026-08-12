@@ -415,7 +415,7 @@ void paintSpotlights(QPainter &painter, const QImage &source,
     return;
 
   painter.save();
-  painter.setClipRect(targetBounds);
+  painter.setClipRect(targetBounds, Qt::IntersectClip);
   painter.fillPath(dimmed, QColor(0, 0, 0, 154));
   for (const Annotation *annotation : spotlights) {
     const QRectF lens = QRectF(annotation->start, annotation->end).normalized();
@@ -658,8 +658,15 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
   painter.translate(marginX, marginY);
   painter.scale(scaleX, scaleY);
   painter.setClipRect(QRectF(QPointF(), selection.size()));
+  painter.save();
+  QPainterPath spotlightClip;
+  spotlightClip.addRoundedRect(QRectF(QPointF(), selection.size()),
+                               hasBackground ? 14 : 0,
+                               hasBackground ? 14 : 0);
+  painter.setClipPath(spotlightClip, Qt::IntersectClip);
   paintSpotlights(painter, cropped, QRectF(QPointF(), selection.size()),
                   cropped.rect(), annotations);
+  painter.restore();
   for (const Annotation &annotation : annotations)
     drawAnnotation(painter, annotation);
   painter.restore();

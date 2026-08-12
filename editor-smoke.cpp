@@ -303,12 +303,12 @@ int main(int argc, char **argv) {
     application.processEvents();
     const QImage beforeSpotlight(snapshotPath);
     QTest::keyClick(&spotlightEditor, Qt::Key_S);
-    QTest::mouseMove(&spotlightEditor, QPoint(256, 138), 20);
+    QTest::mouseMove(&spotlightEditor, QPoint(236, 138), 20);
     application.processEvents();
     if (spotlightEditor.cursor().shape() != Qt::PointingHandCursor)
       return 81;
     QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(256, 138));
+                      QPoint(236, 138));
     QTest::mousePress(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(300, 220));
     QTest::mouseMove(&spotlightEditor, QPoint(500, 380), 20);
@@ -318,10 +318,25 @@ int main(int argc, char **argv) {
     const QImage spotlightSnapshot(snapshotPath);
     if (spotlightSnapshot.isNull() || spotlightSnapshot == beforeSpotlight)
       return 72;
+    QTest::keyClick(&spotlightEditor, Qt::Key_S);
+    QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(236, 138));
+    QTest::mousePress(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(160, 180));
+    QTest::mouseMove(&spotlightEditor, QPoint(250, 260), 20);
+    QTest::mouseRelease(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(250, 260));
+    application.processEvents();
+    if (QImage(snapshotPath) == spotlightSnapshot)
+      return 87;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != spotlightSnapshot)
+      return 88;
     QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(400, 300));
     QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(220, 138));
+                      QPoint(200, 138));
     application.processEvents();
     const QImage ellipseSnapshot(snapshotPath);
     if (ellipseSnapshot == spotlightSnapshot)
@@ -337,7 +352,7 @@ int main(int argc, char **argv) {
     QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(400, 300));
     QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(292, 138));
+                      QPoint(272, 138));
     application.processEvents();
     if (QImage(snapshotPath) == ellipseSnapshot)
       return 85;
@@ -393,7 +408,7 @@ int main(int argc, char **argv) {
     narrowEditor.show();
     application.processEvents();
     QTest::keyClick(&narrowEditor, Qt::Key_A, Qt::ControlModifier);
-    QTest::mouseMove(&narrowEditor, QPoint(655, 46), 20);
+    QTest::mouseMove(&narrowEditor, QPoint(670, 46), 20);
     application.processEvents();
     if (narrowEditor.cursor().shape() != Qt::PointingHandCursor)
       return 80;
@@ -879,6 +894,24 @@ int main(int argc, char **argv) {
         return 65;
     }
   }
+
+  Annotation edgeSpotlight;
+  edgeSpotlight.kind = Annotation::Kind::Spotlight;
+  edgeSpotlight.start = {0, 0};
+  edgeSpotlight.end = {40, 40};
+  edgeSpotlight.color = QColor(QStringLiteral("#ff00ff"));
+  edgeSpotlight.size = 4;
+  edgeSpotlight.magnification = 2;
+  edgeSpotlight.spotlightShape = SpotlightShape::Rectangle;
+  const QImage roundedBaseline =
+      renderCapture(clippingCapture, QRectF(0, 0, 100, 100), {},
+                    BackgroundStyle::Aurora);
+  const QImage roundedSpotlight = renderCapture(
+      clippingCapture, QRectF(0, 0, 100, 100), {edgeSpotlight},
+      BackgroundStyle::Aurora);
+  if (roundedSpotlight.pixelColor(66, 66) !=
+      roundedBaseline.pixelColor(66, 66))
+    return 89;
 
   CaptureData highDpiCapture = capture;
   highDpiCapture.monitor.scale = 2.0;
