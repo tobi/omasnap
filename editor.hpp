@@ -25,6 +25,7 @@ public:
 protected:
   bool eventFilter(QObject *watched, QEvent *event) override;
   void keyPressEvent(QKeyEvent *event) override;
+  void keyReleaseEvent(QKeyEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseDoubleClickEvent(QMouseEvent *event) override;
   void mousePressEvent(QMouseEvent *event) override;
@@ -138,6 +139,7 @@ private:
   QRectF cropDragImageRect_;
   QPointF cursor_;
   bool dragging_ = false;
+  bool creationConstraintActive_ = false;
   Interaction interaction_ = Interaction::None;
   QVector<QPointF> freehandPoints_;
   bool windowMode_ = false;
@@ -176,3 +178,6 @@ private:
   qreal textSize_ = 4.0;
   QFutureWatcher<OcrResult> ocrWatcher_;
 };
+
+[[nodiscard]] QPointF constrainedCreationEndpoint(
+    CaptureEditor::Tool tool, const QPointF &start, const QPointF &end);

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <numbers>
 
 namespace {
 /** Guards the working-snapshot lifecycle: create and overwrite in place. */
@@ -222,6 +223,44 @@ bool runSpotlightRenderingCheck(QString &error) {
   }
   return true;
 }
+
+bool runCreationConstraintCheck(QString &error) {
+  const QPointF start(10, 10);
+  const QPointF square = constrainedCreationEndpoint(
+      CaptureEditor::Tool::Rectangle, start, QPointF(40, 30));
+  const QPointF circle = constrainedCreationEndpoint(
+      CaptureEditor::Tool::Spotlight, start, QPointF(-10, 45));
+  if (square != QPointF(40, 40) || circle != QPointF(-25, 45)) {
+    error = QStringLiteral("Area creation constraint did not preserve a 1:1 "
+                           "bounding box");
+    return false;
+  }
+
+  for (const CaptureEditor::Tool tool : {CaptureEditor::Tool::Line,
+                                         CaptureEditor::Tool::Arrow}) {
+    const QPointF rawEnd(40, 22);
+    const QPointF snapped = constrainedCreationEndpoint(tool, start, rawEnd);
+    const QPointF delta = snapped - start;
+    const qreal snappedAngle = std::atan2(delta.y(), delta.x());
+    constexpr qreal angleStep = std::numbers::pi_v<qreal> / 4.0;
+    const qreal steps = snappedAngle / angleStep;
+    if (std::abs(steps - std::round(steps)) > 0.0001 ||
+        std::abs(QLineF(start, snapped).length() -
+                 QLineF(start, rawEnd).length()) > 0.0001) {
+      error = QStringLiteral(
+          "Line creation constraint did not snap to 45 degrees");
+      return false;
+    }
+  }
+
+  const QPointF unchanged = constrainedCreationEndpoint(
+      CaptureEditor::Tool::Freehand, start, QPointF(33, 52));
+  if (unchanged != QPointF(33, 52)) {
+    error = QStringLiteral("Creation constraint changed an unrelated tool");
+    return false;
+  }
+  return true;
+}
 } // namespace
 /** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
@@ -240,6 +279,10 @@ int main(int argc, char **argv) {
   if (!runSpotlightRenderingCheck(snapshotError)) {
     std::fprintf(stderr, "%s\n", qPrintable(snapshotError));
     return 71;
+  }
+  if (!runCreationConstraintCheck(snapshotError)) {
+    std::fprintf(stderr, "%s\n", qPrintable(snapshotError));
+    return 90;
   }
   const QString outputRoot =
       argc > 1 ? QString::fromLocal8Bit(argv[1])
@@ -289,6 +332,60 @@ int main(int argc, char **argv) {
   capture.windows = {
       {{80, 80, 300, 220}, QStringLiteral("1"), QStringLiteral("first")},
       {{420, 120, 300, 320}, QStringLiteral("2"), QStringLiteral("second")}};
+
+  {
+    CaptureEditor constraintEditor(capture);
+    constraintEditor.resize(800, 600);
+    constraintEditor.show();
+    application.processEvents();
+    QTest::mousePress(&constraintEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 100));
+    QTest::mouseMove(&constraintEditor, QPoint(650, 470), 20);
+    QTest::mouseRelease(&constraintEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(650, 470));
+    application.processEvents();
+
+    const auto expectedRectangle = [&](const QPointF &end) {
+      Annotation rectangle;
+      rectangle.kind = Annotation::Kind::Rectangle;
+      rectangle.start = {175, 100};
+      rectangle.end = end;
+      rectangle.color = QColor(QStringLiteral("#ff375f"));
+      rectangle.size = 4;
+      return renderCapture(capture, QRectF(100, 100, 550, 370), {rectangle},
+                           BackgroundStyle::None);
+    };
+    const auto dragRectangle = [&](bool releaseShiftBeforeMouse) {
+      QTest::keyClick(&constraintEditor, Qt::Key_R);
+      QTest::mousePress(&constraintEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(300, 220));
+      QTest::mouseMove(&constraintEditor, QPoint(420, 280), 20);
+      QTest::keyPress(&constraintEditor, Qt::Key_Shift);
+      application.processEvents();
+      if (releaseShiftBeforeMouse)
+        QTest::keyRelease(&constraintEditor, Qt::Key_Shift);
+      QTest::mouseRelease(&constraintEditor, Qt::LeftButton, Qt::NoModifier,
+                          QPoint(420, 280));
+      if (!releaseShiftBeforeMouse)
+        QTest::keyRelease(&constraintEditor, Qt::Key_Shift);
+      application.processEvents();
+    };
+
+    dragRectangle(true);
+    const QImage freeExpected = expectedRectangle(QPointF(295, 160));
+    if (QImage(snapshotPath).convertToFormat(freeExpected.format()) !=
+        freeExpected)
+      return 91;
+    QTest::keyClick(&constraintEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+
+    dragRectangle(false);
+    const QImage constrainedExpected = expectedRectangle(QPointF(295, 220));
+    if (QImage(snapshotPath).convertToFormat(constrainedExpected.format()) !=
+        constrainedExpected)
+      return 92;
+    constraintEditor.close();
+  }
 
   {
     CaptureEditor spotlightEditor(capture);

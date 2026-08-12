@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <utility>
 
 namespace {
@@ -66,6 +67,13 @@ bool hasEndpointHandles(Annotation::Kind kind) {
   return kind == Annotation::Kind::Arrow || kind == Annotation::Kind::Line ||
          kind == Annotation::Kind::Rectangle ||
          kind == Annotation::Kind::Spotlight;
+}
+
+bool supportsCreationConstraint(CaptureEditor::Tool tool) {
+  return tool == CaptureEditor::Tool::Arrow ||
+         tool == CaptureEditor::Tool::Line ||
+         tool == CaptureEditor::Tool::Rectangle ||
+         tool == CaptureEditor::Tool::Spotlight;
 }
 
 bool showsSelectionBounds(Annotation::Kind kind) {
@@ -221,6 +229,33 @@ QString backgroundName(BackgroundStyle style) {
   return {};
 }
 } // namespace
+
+QPointF constrainedCreationEndpoint(CaptureEditor::Tool tool,
+                                    const QPointF &start,
+                                    const QPointF &end) {
+  const QPointF delta = end - start;
+  if (tool == CaptureEditor::Tool::Rectangle ||
+      tool == CaptureEditor::Tool::Spotlight) {
+    const qreal extent = std::max(std::abs(delta.x()), std::abs(delta.y()));
+    if (qFuzzyIsNull(extent))
+      return end;
+    const qreal xDirection = delta.x() < 0 ? -1.0 : 1.0;
+    const qreal yDirection = delta.y() < 0 ? -1.0 : 1.0;
+    return start + QPointF(xDirection * extent, yDirection * extent);
+  }
+  if (tool == CaptureEditor::Tool::Arrow ||
+      tool == CaptureEditor::Tool::Line) {
+    const qreal length = QLineF(start, end).length();
+    if (qFuzzyIsNull(length))
+      return end;
+    constexpr qreal angleStep = std::numbers::pi_v<qreal> / 4.0;
+    const qreal angle =
+        std::round(std::atan2(delta.y(), delta.x()) / angleStep) * angleStep;
+    return start + QPointF(std::cos(angle) * length,
+                           std::sin(angle) * length);
+  }
+  return end;
+}
 
 CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
                              QWidget *parent)
@@ -669,10 +704,10 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
   add(36, QStringLiteral("tool-select"), {},
       QStringLiteral("Select/move · V · Wheel zoom · outer handles crop"));
   add(36, QStringLiteral("tool-arrow"), {},
-      QStringLiteral("Arrow · A · Size %1 · Wheel")
+      QStringLiteral("Arrow · A · Shift snaps 45° · Size %1 · Wheel")
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-line"), {},
-      QStringLiteral("Line · L · Size %1 · Wheel")
+      QStringLiteral("Line · L · Shift snaps 45° · Size %1 · Wheel")
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-freehand"), {},
       QStringLiteral("Freehand · F · Size %1 · Wheel")
@@ -681,14 +716,14 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
       QStringLiteral("Highlighter · H · Size %1 · Wheel")
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-spotlight"), {},
-      QStringLiteral("Spotlight/Loupe · S · %1 · %2×")
+      QStringLiteral("Spotlight/Loupe · S · Shift locks 1:1 · %1 · %2×")
           .arg(spotlightShapeName(spotlightShape_))
           .arg(spotlightMagnification_, 0, 'f', 1));
   add(36, QStringLiteral("tool-marker"), {},
       QStringLiteral("Number marker · C · Size %1 · Wheel")
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-rectangle"), {},
-      QStringLiteral("Rectangle · R"));
+      QStringLiteral("Rectangle · R · Shift makes square"));
   add(36, QStringLiteral("tool-text"), {},
       QStringLiteral("Neucha text · T · %1 · Wheel")
           .arg(QString::fromLatin1(
@@ -889,6 +924,7 @@ void CaptureEditor::handleEscape() {
   dragStartStateValid_ = false;
   dragChanged_ = false;
   dragging_ = false;
+  creationConstraintActive_ = false;
   interaction_ = Interaction::None;
   colorPaletteOpen_ = false;
   customColorPickerOpen_ = false;
@@ -1178,6 +1214,13 @@ void CaptureEditor::handleToolbar(const QString &action) {
 }
 
 void CaptureEditor::keyPressEvent(QKeyEvent *event) {
+  if (event->key() == Qt::Key_Shift && phase_ == Phase::Edit && dragging_ &&
+      supportsCreationConstraint(tool_)) {
+    creationConstraintActive_ = true;
+    event->accept();
+    update();
+    return;
+  }
   if (event->key() == Qt::Key_Escape) {
     handleEscape();
     return;
@@ -1305,6 +1348,16 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   }
   updatePointerCursor();
   update();
+}
+
+void CaptureEditor::keyReleaseEvent(QKeyEvent *event) {
+  if (event->key() == Qt::Key_Shift && creationConstraintActive_) {
+    creationConstraintActive_ = false;
+    event->accept();
+    update();
+    return;
+  }
+  QWidget::keyReleaseEvent(event);
 }
 
 void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
@@ -1601,6 +1654,9 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
   } else {
     dragStart_ = point;
     dragging_ = true;
+    creationConstraintActive_ =
+        supportsCreationConstraint(tool_) &&
+        event->modifiers().testFlag(Qt::ShiftModifier);
     if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
       freehandPoints_.clear();
       freehandPoints_.reserve(256);
@@ -1642,7 +1698,11 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
     return;
   }
 
-  const QPointF end = toAnnotationPoint(event->position());
+  const QPointF rawEnd = toAnnotationPoint(event->position());
+  const QPointF end = creationConstraintActive_
+                          ? constrainedCreationEndpoint(tool_, dragStart_, rawEnd)
+                          : rawEnd;
+  creationConstraintActive_ = false;
   if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
     if (freehandPoints_.isEmpty() ||
         QLineF(freehandPoints_.last(), end).length() >= 1.0)
@@ -1913,7 +1973,10 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     } else if (tool_ == Tool::Spotlight) {
       dragPreview.kind = Annotation::Kind::Spotlight;
       dragPreview.start = dragStart_;
-      dragPreview.end = toAnnotationPoint(cursor_);
+      const QPointF end = toAnnotationPoint(cursor_);
+      dragPreview.end = creationConstraintActive_
+                            ? constrainedCreationEndpoint(tool_, dragStart_, end)
+                            : end;
       dragPreview.magnification = spotlightMagnification_;
       dragPreview.spotlightShape = spotlightShape_;
     } else {
@@ -1922,7 +1985,10 @@ void CaptureEditor::paintEdit(QPainter &painter) {
                              : (tool_ == Tool::Line ? Annotation::Kind::Line
                                                     : Annotation::Kind::Arrow);
       dragPreview.start = dragStart_;
-      dragPreview.end = toAnnotationPoint(cursor_);
+      const QPointF end = toAnnotationPoint(cursor_);
+      dragPreview.end = creationConstraintActive_
+                            ? constrainedCreationEndpoint(tool_, dragStart_, end)
+                            : end;
     }
     dragPreview.color =
         tool_ == Tool::Ocr ? QColor(Qt::white) : annotationColor();

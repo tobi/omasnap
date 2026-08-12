@@ -218,6 +218,7 @@ Install the corresponding Tesseract language data before adding a language to
 | `B` | Cycle backdrop |
 | `1`–`6` | Set annotation color |
 | Wheel | Scale selected layer or change active tool size |
+| Hold `Shift` while dragging | Make rectangles and spotlight lenses 1:1; snap lines and arrows to 45° increments |
 | Double-click text | Reopen text editing |
 | `Delete` | Delete selected layer |
 | `Ctrl+Z` | Undo |
