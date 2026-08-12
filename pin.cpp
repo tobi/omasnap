@@ -1,5 +1,7 @@
+/** @fileoverview Displays and manages pinned screenshot layers. */
 #include "pin.hpp"
 #include "icons.hpp"
+#include "pin-file.hpp"
 
 #include <LayerShellQt/Window>
 #include <QApplication>
@@ -74,7 +76,8 @@ bool copyPngToClipboard(const QImage &image, QString &error) {
   return true;
 }
 
-bool copyTextToClipboard(const QString &text, QString &error) {
+/** Copies pin text through the persistent Wayland clipboard. */
+bool copyPinTextToClipboard(const QString &text, QString &error) {
   QProcess copy;
   copy.start(
       QStringLiteral("wl-copy"),
@@ -96,13 +99,17 @@ bool copyTextToClipboard(const QString &text, QString &error) {
 
 class PinWindow final : public QWidget {
 public:
+  /** Creates a pin and holds its backing file open. */
   explicit PinWindow(QImage image, QString path)
-      : image_(std::move(image)), path_(std::move(path)) {
+      : image_(std::move(image)), path_(std::move(path)), snapshotFile_(path_) {
     setWindowTitle(QStringLiteral("omasnap-pin"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setMouseTracking(true);
     resize(initialSize());
   }
+
+  /** Returns whether this process owns the pin's shared file lock. */
+  [[nodiscard]] bool hasPinLock() const { return snapshotFile_.isLocked(); }
 
 protected:
   void paintEvent(QPaintEvent *) override {
@@ -183,7 +190,7 @@ protected:
       }
       if (pathButtonRect().contains(position)) {
         QString error;
-        showToast(copyTextToClipboard(path_, error)
+        showToast(copyPinTextToClipboard(path_, error)
                       ? QStringLiteral("Copied path")
                       : error);
         return;
@@ -195,13 +202,15 @@ protected:
     }
   }
 
-  // Send the pinned image back to the omasnap editor, replacing the pin.
+  /** Reopens the file without deleting it during process handoff. */
   void reopenInEditor() {
     if (!QProcess::startDetached(QCoreApplication::applicationFilePath(),
                                  {path_}))
       showToast(QStringLiteral("Could not start omasnap"));
-    else
+    else {
+      snapshotFile_.preserveForEditor();
       close();
+    }
   }
 
   void mouseMoveEvent(QMouseEvent *event) override {
@@ -380,6 +389,7 @@ private:
   QString hoverTip_;
   bool hovered_ = false;
   int hoveredControl_ = -1;
+  PinSnapshotFile snapshotFile_;
 };
 
 } // namespace
@@ -392,6 +402,10 @@ int runPinnedCapture(const QString &path) {
   }
 
   PinWindow window(std::move(image), path);
+  if (!window.hasPinLock()) {
+    qWarning("omasnap: could not lock pinned image %s", qUtf8Printable(path));
+    return 1;
+  }
   static_cast<void>(window.winId());
   QWindow *handle = window.windowHandle();
   LayerShellQt::Window *layer =

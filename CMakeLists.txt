@@ -34,6 +34,8 @@ qt_add_executable(omasnap
   icons.hpp
   pin.cpp
   pin.hpp
+  pin-file.cpp
+  pin-file.hpp
   capture.cpp
   capture.hpp
   surface-capture.cpp
@@ -65,6 +67,12 @@ target_link_libraries(omasnap PRIVATE
 
 qt_add_executable(omasnap-smoke
   editor-smoke.cpp
+  pin-lifecycle-smoke.cpp
+  pin-lifecycle-smoke.hpp
+  pin-file.cpp
+  pin-file.hpp
+  pin.cpp
+  pin.hpp
   icons.cpp
   icons.hpp
   transform-smoke.cpp
@@ -90,6 +98,7 @@ target_link_libraries(omasnap-smoke PRIVATE
   Qt6::Gui
   Qt6::Test
   Qt6::Widgets
+  LayerShellQt::Interface
   PkgConfig::WaylandClient
 )
 

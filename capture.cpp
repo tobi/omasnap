@@ -24,6 +24,7 @@
 #include <cmath>
 #include <fcntl.h>
 #include <limits>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -612,11 +613,15 @@ QString temporarySnapshotPath() {
 }
 
 QString pinnedSnapshotPath(int index) {
-  return runtimePath(QStringLiteral("pin-%1-%2.png")
-                         .arg(QCoreApplication::applicationPid())
-                         .arg(index));
+  // A fresh nonce prevents collisions when the editor PID is recycled.
+  return runtimePath(
+      QStringLiteral("pin-%1-%2-%3.png")
+          .arg(QCoreApplication::applicationPid())
+          .arg(index)
+          .arg(QRandomGenerator::system()->generate64(), 16, 16, QChar('0')));
 }
 
+/** Removes stale pin files that no running pin still holds. */
 void prunePinnedSnapshots() {
   const QString runtime = secureRuntimeDirectory();
   if (runtime.isEmpty())
@@ -625,8 +630,18 @@ void prunePinnedSnapshots() {
   const QFileInfoList stale =
       QDir(runtime).entryInfoList({QStringLiteral("pin-*.png")}, QDir::Files);
   for (const QFileInfo &entry : stale) {
-    if (entry.lastModified() < cutoff)
-      QFile::remove(entry.absoluteFilePath());
+    if (entry.lastModified() >= cutoff)
+      continue;
+    const QByteArray encodedPath = QFile::encodeName(entry.absoluteFilePath());
+    const int fd = ::open(encodedPath.constData(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0 || ::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+      if (fd >= 0)
+        ::close(fd);
+      continue;
+    }
+    QFile::remove(entry.absoluteFilePath());
+    ::flock(fd, LOCK_UN);
+    ::close(fd);
   }
 }
 

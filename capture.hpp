@@ -82,6 +82,7 @@ void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
                                                 QString &error);
 [[nodiscard]] QString temporarySnapshotPath();
 [[nodiscard]] QString pinnedSnapshotPath(int index);
+/** Removes abandoned pin files without touching active pins. */
 void prunePinnedSnapshots();
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
                                          QString &error);

@@ -227,8 +227,8 @@ Install the corresponding Tesseract language data before adding a language to
 
 ### Pinned captures
 
-`P` renders the current capture, writes it to a `pin-<pid>-<n>.png` under the runtime
-snapshot directory, and launches the same `omasnap` executable in detached pin mode.
+`P` renders the current capture, writes it to a `pin-<pid>-<n>-<random>.png` under the
+runtime snapshot directory, and launches the same `omasnap` executable in detached pin mode.
 The layer-shell surface is anchored 14 logical pixels from the bottom-right corner and
 stays visible on every workspace without compositor window rules. It preserves the image
 aspect ratio, with a maximum width of one third of the screen and a maximum height of one
