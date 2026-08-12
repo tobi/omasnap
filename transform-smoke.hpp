@@ -1,7 +1,7 @@
-/** @fileoverview Declares display-transform smoke checks. */
+/** @fileoverview Declares native Wayland capture smoke checks. */
 #pragma once
 
 #include <QString>
 
-/** Checks monitor geometry and captured-buffer orientation. */
+/** Checks Wayland cleanup, monitor geometry, and buffer orientation. */
 [[nodiscard]] bool runTransformSmoke(QString &error);

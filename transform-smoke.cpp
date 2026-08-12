@@ -1,7 +1,8 @@
-/** @fileoverview Tests monitor geometry and Wayland buffer orientation. */
+/** @fileoverview Tests Wayland capture transforms and object cleanup. */
 #include "transform-smoke.hpp"
 
 #include "capture.hpp"
+#include "surface-capture-smoke.hpp"
 
 #include <QDir>
 #include <QFile>
@@ -36,6 +37,11 @@ QImage indexedImage(const QVector<QVector<int>> &rows) {
 } // namespace
 
 bool runTransformSmoke(QString &error) {
+  if (!runWaylandCleanupChecks()) {
+    error =
+        QStringLiteral("Wayland capture objects were not released in order");
+    return false;
+  }
   QTemporaryDir fakeCommands;
   if (!fakeCommands.isValid()) {
     error = QStringLiteral("Could not create transform-test directory");

@@ -71,7 +71,8 @@ qt_add_executable(omasnap-smoke
   transform-smoke.hpp
   capture.cpp
   capture.hpp
-  surface-capture.cpp
+  surface-capture-smoke.cpp
+  surface-capture-smoke.hpp
   ${PROTOCOL_SOURCES}
   editor.cpp
   editor.hpp

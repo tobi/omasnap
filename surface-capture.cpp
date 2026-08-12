@@ -56,7 +56,25 @@ struct CaptureState {
   void *memory = MAP_FAILED;
   std::size_t memorySize = 0;
 
+  /** Releases capture protocol objects before disconnecting the display. */
   ~CaptureState() {
+    if (frame)
+      ext_image_copy_capture_frame_v1_destroy(frame);
+    if (session)
+      ext_image_copy_capture_session_v1_destroy(session);
+    if (source)
+      ext_image_capture_source_v1_destroy(source);
+    for (const auto &toplevel : toplevels) {
+      if (toplevel->handle)
+        ext_foreign_toplevel_handle_v1_destroy(toplevel->handle);
+    }
+    if (toplevelList)
+      ext_foreign_toplevel_list_v1_destroy(toplevelList);
+    if (sourceManager)
+      ext_foreign_toplevel_image_capture_source_manager_v1_destroy(
+          sourceManager);
+    if (captureManager)
+      ext_image_copy_capture_manager_v1_destroy(captureManager);
     if (buffer)
       wl_buffer_destroy(buffer);
     if (pool)
@@ -65,6 +83,10 @@ struct CaptureState {
       munmap(memory, memorySize);
     if (fd >= 0)
       close(fd);
+    if (shm)
+      wl_shm_destroy(shm);
+    if (registry)
+      wl_registry_destroy(registry);
     if (display)
       wl_display_disconnect(display);
   }
