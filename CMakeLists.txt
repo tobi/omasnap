@@ -30,6 +30,8 @@ endforeach()
 
 qt_add_executable(omasnap
   main.cpp
+  cli-path.cpp
+  cli-path.hpp
   icons.cpp
   icons.hpp
   pin.cpp
@@ -69,6 +71,8 @@ qt_add_executable(omasnap-smoke
   icons.hpp
   transform-smoke.cpp
   transform-smoke.hpp
+  cli-path.cpp
+  cli-path.hpp
   capture.cpp
   capture.hpp
   surface-capture.cpp

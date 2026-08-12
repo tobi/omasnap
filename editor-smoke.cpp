@@ -1,6 +1,7 @@
 /** @fileoverview Exercises capture editor behavior without a live compositor.
  */
 #include "capture.hpp"
+#include "cli-path.hpp"
 #include "editor.hpp"
 #include "transform-smoke.hpp"
 
@@ -11,12 +12,55 @@
 #include <QFileInfo>
 #include <QPainter>
 #include <QTemporaryDir>
+#include <QUrl>
 #include <QWheelEvent>
 #include <QtTest/QTest>
 
 #include <algorithm>
 
 namespace {
+/** Checks that positional local image targets are recognized. */
+bool runPositionalImageTargetCheck(QString &error) {
+  QTemporaryDir directory;
+  if (!directory.isValid()) {
+    error = QStringLiteral("Could not create positional target directory");
+    return false;
+  }
+  const QString path = QDir(directory.path())
+                           .filePath(QStringLiteral("image with # marker.png"));
+  QImage image(8, 8, QImage::Format_ARGB32_Premultiplied);
+  image.fill(Qt::white);
+  const QString url = QUrl::fromLocalFile(path).toString();
+  const QString previousDirectory = QDir::currentPath();
+  const QString colonName = QStringLiteral("image:one.png");
+  const QString colonPath = QDir(directory.path()).filePath(colonName);
+  const QString remoteLookalikeName =
+      QStringLiteral("https:/example.com/image.png");
+  const bool savedColonImage = image.save(colonPath, "PNG");
+  const bool changedDirectory = QDir::setCurrent(directory.path());
+  const QString resolvedColonPath = resolveLocalImagePath(colonName);
+  const bool createdRemoteLookalike =
+      changedDirectory && QDir().mkpath(QStringLiteral("https:/example.com")) &&
+      image.save(remoteLookalikeName, "PNG");
+  const QString resolvedRemoteUrl = createdRemoteLookalike
+                                        ? resolveLocalImagePath(QStringLiteral(
+                                              "https://example.com/image.png"))
+                                        : QStringLiteral("setup failed");
+  QDir::setCurrent(previousDirectory);
+  if (!image.save(path, "PNG") || resolveLocalImagePath(path) != path ||
+      resolveLocalImagePath(url) != path || !changedDirectory ||
+      resolvedColonPath != colonPath || !savedColonImage ||
+      !createdRemoteLookalike || !resolvedRemoteUrl.isEmpty() ||
+      !resolveLocalImagePath(
+           QDir(directory.path()).filePath(QStringLiteral("missing.png")))
+           .isEmpty()) {
+    error =
+        QStringLiteral("Local file URL was not recognized as an image target");
+    return false;
+  }
+  return true;
+}
+
 /** Guards the working-snapshot lifecycle: create and overwrite in place. */
 bool runTemporarySnapshotChecks(QString &error) {
   const QString path = temporarySnapshotPath();
@@ -146,6 +190,10 @@ int main(int argc, char **argv) {
   if (!loadCaptureFonts())
     return 17;
   QString snapshotError;
+  if (!runPositionalImageTargetCheck(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 70;
+  }
   if (!runTemporarySnapshotChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 68;

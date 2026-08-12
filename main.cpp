@@ -1,4 +1,5 @@
 #include "capture.hpp"
+#include "cli-path.hpp"
 #include "editor.hpp"
 #include "pin.hpp"
 
@@ -8,7 +9,6 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDir>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QLockFile>
 #include <QScreen>
@@ -156,9 +156,9 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (!positional.isEmpty()) {
-    const QFileInfo target(positional.first());
-    if (filePath.isEmpty() && target.isFile()) {
-      filePath = positional.first();
+    const QString localTarget = resolveLocalImagePath(positional.first());
+    if (filePath.isEmpty() && !localTarget.isEmpty()) {
+      filePath = localTarget;
     } else {
       ++requestedModes;
       const QString mode = positional.first();
