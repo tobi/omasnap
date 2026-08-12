@@ -39,6 +39,14 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ./build/omasnap-smoke /tmp/omasnap-smoke
 
+      - name: Run focused smokes
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          for smoke in ./build/omasnap-*-smoke; do
+            "$smoke"
+          done
+
       - name: Stage installation
         run: cmake --install build --prefix "$PWD/stage/usr"
 

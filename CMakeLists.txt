@@ -40,6 +40,8 @@ qt_add_executable(omasnap
   ${PROTOCOL_SOURCES}
   editor.cpp
   editor.hpp
+  eyedropper.cpp
+  eyedropper.hpp
 )
 qt_add_resources(omasnap "capture-fonts"
   PREFIX "/fonts"
@@ -75,6 +77,8 @@ qt_add_executable(omasnap-smoke
   ${PROTOCOL_SOURCES}
   editor.cpp
   editor.hpp
+  eyedropper.cpp
+  eyedropper.hpp
 )
 qt_add_resources(omasnap-smoke "capture-fonts-smoke"
   PREFIX "/fonts"
@@ -92,6 +96,15 @@ target_link_libraries(omasnap-smoke PRIVATE
   Qt6::Widgets
   PkgConfig::WaylandClient
 )
+
+qt_add_executable(omasnap-eyedropper-smoke
+  eyedropper-smoke.cpp
+  eyedropper.cpp
+  eyedropper.hpp
+)
+target_compile_features(omasnap-eyedropper-smoke PRIVATE cxx_std_23)
+target_compile_options(omasnap-eyedropper-smoke PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(omasnap-eyedropper-smoke PRIVATE Qt6::Core Qt6::Gui)
 
 install(TARGETS omasnap
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"

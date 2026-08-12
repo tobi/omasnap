@@ -42,7 +42,8 @@ public:
     Marker,
     Rectangle,
     Text,
-    Ocr
+    Ocr,
+    Eyedropper
   };
 
 private:

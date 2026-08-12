@@ -2,6 +2,7 @@
  */
 #include "editor.hpp"
 #include "icons.hpp"
+#include "eyedropper.hpp"
 
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -35,7 +36,7 @@ constexpr std::array<const char *, 6> kColorNames{
     "#ff375f", "#ff9f0a", "#ffd60a", "#30d158", "#0a84ff", "#bf5af2"};
 constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
-constexpr qreal kToolbarWidth = 680;
+constexpr qreal kToolbarWidth = 760;
 
 bool hasEndpointHandles(Annotation::Kind kind) {
   return kind == Annotation::Kind::Arrow || kind == Annotation::Kind::Line ||
@@ -77,6 +78,8 @@ QString toolAction(CaptureEditor::Tool tool) {
     return QStringLiteral("tool-text");
   case CaptureEditor::Tool::Ocr:
     return QStringLiteral("tool-ocr");
+  case CaptureEditor::Tool::Eyedropper:
+    return QStringLiteral("tool-eyedropper");
   }
   return {};
 }
@@ -609,6 +612,8 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
       annotationColor());
   add(36, QStringLiteral("tool-ocr"), {},
       QStringLiteral("Draw around text to copy · O"));
+  add(36, QStringLiteral("tool-eyedropper"), {},
+      QStringLiteral("Sample source color · I"));
   add(36, QStringLiteral("background"), {},
       QStringLiteral("Cycle backdrop · B"));
   add(36, QStringLiteral("undo"), {}, QStringLiteral("Undo · Ctrl+Z"));
@@ -997,6 +1002,8 @@ void CaptureEditor::handleToolbar(const QString &action) {
     tool_ = Tool::Text;
   else if (action == QStringLiteral("tool-ocr"))
     tool_ = Tool::Ocr;
+  else if (action == QStringLiteral("tool-eyedropper"))
+    tool_ = Tool::Eyedropper;
   else if (action == QStringLiteral("palette"))
     colorPaletteOpen_ = true;
   else if (action.startsWith(QStringLiteral("color-"))) {
@@ -1128,6 +1135,8 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     tool_ = Tool::Text;
   } else if (event->key() == Qt::Key_O) {
     tool_ = Tool::Ocr;
+  } else if (event->key() == Qt::Key_I) {
+    tool_ = Tool::Eyedropper;
   } else if (event->key() == Qt::Key_P) {
     pinSnapshot();
     return;
@@ -1369,6 +1378,29 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
   }
   if (!editImageRect().contains(cursor_))
     return;
+
+  if (tool_ == Tool::Eyedropper) {
+    customColor_ = sampleSourceColor(capture_.source, capture_.preview.size(),
+                                     selection_, editImageRect(), cursor_);
+    usingCustomColor_ = true;
+    if (customColor_.hsvHueF() >= 0)
+      customHue_ = customColor_.hsvHueF();
+    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size()) {
+      recordEdit();
+      annotations_[selectedAnnotation_].color = customColor_;
+      persistSnapshot();
+    }
+    const QString hex = customColor_.name(QColor::HexRgb).toUpper();
+    QString clipboardError;
+    if (copyTextToClipboard(hex, clipboardError))
+      setStatus(QStringLiteral("%1 copied · Select tool").arg(hex));
+    else
+      setStatus(QStringLiteral("%1 · %2").arg(hex, clipboardError));
+    tool_ = Tool::Select;
+    updatePointerCursor();
+    update();
+    return;
+  }
 
   const QPointF point = toAnnotationPoint(cursor_);
   if (tool_ == Tool::Select) {
@@ -1892,7 +1924,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
        {QStringLiteral("Double click"), QStringLiteral("Edit text layer")},
        {QStringLiteral("1–6"), QStringLiteral("Color")},
        {QStringLiteral("Wheel"), QStringLiteral("Zoom selected / tool size")},
-       {QStringLiteral("O"), QStringLiteral("Select OCR text")},
+       {QStringLiteral("O / I"), QStringLiteral("OCR / sample color")},
        {QStringLiteral("B / P"), QStringLiteral("Backdrop / Pin on screen")},
        {QStringLiteral("Ctrl+Z"), QStringLiteral("Undo")},
        {QStringLiteral("Ctrl+Shift+Z"), QStringLiteral("Redo")},

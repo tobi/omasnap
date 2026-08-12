@@ -212,6 +212,7 @@ Install the corresponding Tesseract language data before adding a language to
 | `R` | Rectangle |
 | `T` | Neucha text |
 | `O` | Drag an OCR region and copy recognized text |
+| `I` | Sample the original image color, set it as the custom color, and copy `#RRGGBB` |
 | `B` | Cycle backdrop |
 | `1`–`6` | Set annotation color |
 | Wheel | Scale selected layer or change active tool size |

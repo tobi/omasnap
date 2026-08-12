@@ -305,6 +305,18 @@ int main(int argc, char **argv) {
       return 44;
   }
 
+  QTest::keyClick(&editor, Qt::Key_I);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(400, 300));
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::ArrowCursor ||
+      QImage(snapshotPath) == lineSnapshot)
+    return 73;
+  QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+  application.processEvents();
+  if (QImage(snapshotPath) != lineSnapshot)
+    return 74;
+
   const QImage beforeSelectorZoom =
       editor.grab().toImage().copy(QRect(100, 150, 600, 350));
   QWheelEvent selectorZoom(QPointF(520, 265), QPointF(520, 265), {}, {0, 120},
