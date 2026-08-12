@@ -1170,6 +1170,8 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
       const int handle = static_cast<int>(interaction_) -
                          static_cast<int>(Interaction::CropTopLeft);
       const QSizeF previewSize = capture_.preview.size();
+      if (previewSize.width() <= 0.0 || previewSize.height() <= 0.0)
+        return;
       const qreal sourceX = originalSelection_.left() +
                             (cursor_.x() - cropDragImageRect_.left()) *
                                 originalSelection_.width() /
@@ -1180,20 +1182,27 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
                                          cropDragImageRect_.height();
       constexpr qreal minimumCrop = 16;
       QRectF updated = originalSelection_;
-      if (handle == 0 || handle == 6 || handle == 7)
-        updated.setLeft(
-            std::clamp(sourceX, 0.0, originalSelection_.right() - minimumCrop));
-      if (handle == 2 || handle == 3 || handle == 4)
-        updated.setRight(std::clamp(sourceX,
-                                    originalSelection_.left() + minimumCrop,
-                                    previewSize.width()));
-      if (handle == 0 || handle == 1 || handle == 2)
-        updated.setTop(std::clamp(sourceY, 0.0,
-                                  originalSelection_.bottom() - minimumCrop));
-      if (handle == 4 || handle == 5 || handle == 6)
-        updated.setBottom(std::clamp(sourceY,
-                                     originalSelection_.top() + minimumCrop,
-                                     previewSize.height()));
+      if (handle == 0 || handle == 6 || handle == 7) {
+        const qreal maxLeft = std::clamp(
+            originalSelection_.right() - minimumCrop, 0.0, previewSize.width());
+        updated.setLeft(std::clamp(sourceX, 0.0, maxLeft));
+      }
+      if (handle == 2 || handle == 3 || handle == 4) {
+        const qreal minRight = std::clamp(
+            originalSelection_.left() + minimumCrop, 0.0, previewSize.width());
+        updated.setRight(std::clamp(sourceX, minRight, previewSize.width()));
+      }
+      if (handle == 0 || handle == 1 || handle == 2) {
+        const qreal maxTop = std::clamp(
+            originalSelection_.bottom() - minimumCrop, 0.0, previewSize.height());
+        updated.setTop(std::clamp(sourceY, 0.0, maxTop));
+      }
+      if (handle == 4 || handle == 5 || handle == 6) {
+        const qreal minBottom = std::clamp(
+            originalSelection_.top() + minimumCrop, 0.0, previewSize.height());
+        updated.setBottom(
+            std::clamp(sourceY, minBottom, previewSize.height()));
+      }
       const QPointF annotationDelta = selection_.topLeft() - updated.topLeft();
       if (!annotationDelta.isNull()) {
         for (Annotation &annotation : annotations_) {
