@@ -15,6 +15,7 @@
 #include <QPainterPath>
 #include <QProcess>
 #include <QRandomGenerator>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 
@@ -649,28 +650,23 @@ bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
     return false;
   }
 
-  // Reuse the current file (snapshotPath_ is stable) but never follow a
-  // pre-created symlink.
-  const QByteArray encodedPath = QFile::encodeName(path);
-  const int fd = ::open(encodedPath.constData(),
-                        O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
-                        S_IRUSR | S_IWUSR);
-  if (fd < 0 || ::fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
-    if (fd >= 0)
-      ::close(fd);
-    error = QStringLiteral("Could not open secure snapshot file: %1").arg(path);
-    return false;
-  }
-
-  QFile file;
-  if (!file.open(fd, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle)) {
-    ::close(fd);
-    error = QStringLiteral("Could not open snapshot file handle: %1").arg(path);
+  QSaveFile file(path);
+  file.setDirectWriteFallback(false);
+  if (!file.open(QIODevice::WriteOnly) ||
+      !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+    error = QStringLiteral("Could not open secure snapshot file: %1")
+                .arg(file.errorString());
     return false;
   }
 
   if (!image.save(&file, "PNG")) {
+    file.cancelWriting();
     error = QStringLiteral("Could not save temporary snapshot: %1").arg(path);
+    return false;
+  }
+  if (!file.commit()) {
+    error = QStringLiteral("Could not replace temporary snapshot: %1")
+                .arg(file.errorString());
     return false;
   }
   return true;

@@ -15,6 +15,8 @@
 #include <QtTest/QTest>
 
 #include <algorithm>
+#include <csignal>
+#include <sys/resource.h>
 
 namespace {
 /** Guards the working-snapshot lifecycle: create and overwrite in place. */
@@ -40,6 +42,55 @@ bool runTemporarySnapshotChecks(QString &error) {
     return false; // O_EXCL used to fail on the second call.
   if (reload(path) != secondImage) {
     error = QStringLiteral("Overwritten snapshot did not replace the first");
+    return false;
+  }
+
+  QFile baselineFile(path);
+  if (!baselineFile.open(QIODevice::ReadOnly)) {
+    error = QStringLiteral("Could not read the valid snapshot baseline");
+    return false;
+  }
+  const QByteArray baseline = baselineFile.readAll();
+  baselineFile.close();
+
+  QImage largeImage(512, 512, QImage::Format_ARGB32_Premultiplied);
+  quint32 noise = 0x12345678U;
+  for (int y = 0; y < largeImage.height(); ++y) {
+    for (int x = 0; x < largeImage.width(); ++x) {
+      noise ^= noise << 13;
+      noise ^= noise >> 17;
+      noise ^= noise << 5;
+      largeImage.setPixel(x, y, 0xff000000U | (noise & 0x00ffffffU));
+    }
+  }
+
+  struct rlimit originalLimit{};
+  struct sigaction originalSignal{};
+  struct sigaction ignoredSignal{};
+  ignoredSignal.sa_handler = SIG_IGN;
+  sigemptyset(&ignoredSignal.sa_mask);
+  if (::getrlimit(RLIMIT_FSIZE, &originalLimit) != 0 ||
+      ::sigaction(SIGXFSZ, &ignoredSignal, &originalSignal) != 0) {
+    error = QStringLiteral("Could not prepare the interrupted-write check");
+    return false;
+  }
+  struct rlimit limited = originalLimit;
+  limited.rlim_cur = std::min<rlim_t>(originalLimit.rlim_cur, 1024);
+  const bool limitSet = ::setrlimit(RLIMIT_FSIZE, &limited) == 0;
+  QString writeError;
+  const bool interruptedSave =
+      limitSet && saveTemporarySnapshot(largeImage, path, writeError);
+  const bool limitRestored = ::setrlimit(RLIMIT_FSIZE, &originalLimit) == 0;
+  const bool signalRestored =
+      ::sigaction(SIGXFSZ, &originalSignal, nullptr) == 0;
+
+  QFile preservedFile(path);
+  const bool preservedOpened = preservedFile.open(QIODevice::ReadOnly);
+  const QByteArray preserved = preservedFile.readAll();
+  if (!limitSet || interruptedSave || !limitRestored || !signalRestored ||
+      !preservedOpened || preserved != baseline) {
+    error = QStringLiteral(
+        "A failed snapshot write did not preserve the previous PNG");
     return false;
   }
 
