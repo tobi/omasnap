@@ -139,6 +139,57 @@ bool runHighlighterRenderingCheck(QString &error) {
   }
   return true;
 }
+
+bool runSpotlightRenderingCheck(QString &error) {
+  error = QStringLiteral("Spotlight/loupe rendering check failed");
+  CaptureData capture;
+  capture.monitor.scale = 1.0;
+  capture.monitor.pixelSize = {200, 100};
+  capture.source = QImage(200, 100, QImage::Format_ARGB32_Premultiplied);
+  for (int y = 0; y < capture.source.height(); ++y) {
+    for (int x = 0; x < capture.source.width(); ++x)
+      capture.source.setPixelColor(x, y, QColor(x, x, x));
+  }
+  capture.preview = capture.source;
+
+  Annotation spotlight;
+  spotlight.kind = Annotation::Kind::Spotlight;
+  spotlight.start = {50, 20};
+  spotlight.end = {150, 80};
+  spotlight.color = Qt::white;
+  spotlight.size = 4;
+  spotlight.magnification = 2.0;
+  const QImage rendered = renderCapture(capture, QRectF(0, 0, 200, 100),
+                                        {spotlight}, BackgroundStyle::None);
+  if (rendered.isNull())
+    return false;
+
+  const int magnified = rendered.pixelColor(125, 50).red();
+  const int dimmed = rendered.pixelColor(10, 50).red();
+  const int dimmedCorner = rendered.pixelColor(55, 25).red();
+  if (magnified < 108 || magnified > 117 || dimmed > 5 ||
+      dimmedCorner > 28) {
+    error = QStringLiteral(
+        "Spotlight did not magnify its lens while dimming the surroundings");
+    return false;
+  }
+
+  CaptureData highDpi = capture;
+  highDpi.monitor.scale = 2.0;
+  highDpi.monitor.pixelSize = {400, 200};
+  highDpi.source = capture.source.scaled(
+      highDpi.monitor.pixelSize, Qt::IgnoreAspectRatio,
+      Qt::SmoothTransformation);
+  const QImage highDpiRendered = renderCapture(
+      highDpi, QRectF(0, 0, 200, 100), {spotlight}, BackgroundStyle::None);
+  const int highDpiMagnified = highDpiRendered.pixelColor(250, 100).red();
+  if (highDpiRendered.size() != QSize(400, 200) || highDpiMagnified < 108 ||
+      highDpiMagnified > 117) {
+    error = QStringLiteral("Spotlight magnification changed at native DPI");
+    return false;
+  }
+  return true;
+}
 } // namespace
 /** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
@@ -153,6 +204,10 @@ int main(int argc, char **argv) {
   if (!runHighlighterRenderingCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 69;
+  }
+  if (!runSpotlightRenderingCheck(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 71;
   }
   const QString outputRoot =
       argc > 1 ? QString::fromLocal8Bit(argv[1])
@@ -202,6 +257,82 @@ int main(int argc, char **argv) {
   capture.windows = {
       {{80, 80, 300, 220}, QStringLiteral("1"), QStringLiteral("first")},
       {{420, 120, 300, 320}, QStringLiteral("2"), QStringLiteral("second")}};
+
+  {
+    CaptureEditor spotlightEditor(capture);
+    spotlightEditor.resize(800, 600);
+    spotlightEditor.show();
+    application.processEvents();
+    QTest::mousePress(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 100));
+    QTest::mouseMove(&spotlightEditor, QPoint(650, 470), 20);
+    QTest::mouseRelease(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(650, 470));
+    application.processEvents();
+    const QImage beforeSpotlight(snapshotPath);
+    QTest::keyClick(&spotlightEditor, Qt::Key_S);
+    QTest::mousePress(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(300, 220));
+    QTest::mouseMove(&spotlightEditor, QPoint(500, 380), 20);
+    QTest::mouseRelease(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(500, 380));
+    application.processEvents();
+    const QImage spotlightSnapshot(snapshotPath);
+    if (spotlightSnapshot.isNull() || spotlightSnapshot == beforeSpotlight)
+      return 72;
+    QWheelEvent magnifyWheel(QPointF(400, 300), QPointF(400, 300), {},
+                             {0, 120}, Qt::NoButton, Qt::NoModifier,
+                             Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&spotlightEditor, &magnifyWheel);
+    application.processEvents();
+    if (QImage(snapshotPath) == spotlightSnapshot)
+      return 73;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != spotlightSnapshot)
+      return 74;
+    QTest::mousePress(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(500, 380));
+    QTest::mouseMove(&spotlightEditor, QPoint(530, 400), 20);
+    QTest::mouseRelease(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(530, 400));
+    application.processEvents();
+    if (QImage(snapshotPath) == spotlightSnapshot)
+      return 75;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != spotlightSnapshot)
+      return 76;
+    QTest::mousePress(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(400, 300));
+    QTest::mouseMove(&spotlightEditor, QPoint(420, 315), 20);
+    QTest::mouseRelease(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(420, 315));
+    application.processEvents();
+    if (QImage(snapshotPath) == spotlightSnapshot)
+      return 77;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != spotlightSnapshot)
+      return 78;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Delete);
+    application.processEvents();
+    if (QImage(snapshotPath) != beforeSpotlight)
+      return 79;
+    spotlightEditor.close();
+  }
+  {
+    CaptureEditor narrowEditor(capture);
+    narrowEditor.resize(680, 600);
+    narrowEditor.show();
+    application.processEvents();
+    QTest::keyClick(&narrowEditor, Qt::Key_A, Qt::ControlModifier);
+    QTest::mouseMove(&narrowEditor, QPoint(655, 46), 20);
+    application.processEvents();
+    if (narrowEditor.cursor().shape() != Qt::PointingHandCursor)
+      return 80;
+    narrowEditor.close();
+  }
 
   CaptureEditor editor(capture);
   editor.resize(800, 600);
@@ -422,16 +553,16 @@ int main(int argc, char **argv) {
   application.processEvents();
   if (QImage(snapshotPath) == beforeBackdropSnapshot)
     return 55;
-  // Palette toolbar button (index 8 after Highlighter was inserted).
-  QTest::mouseMove(&editor, QPoint(398, 92), 20);
+  // Palette toolbar button (index 9 after Spotlight was inserted).
+  QTest::mouseMove(&editor, QPoint(418, 92), 20);
   application.processEvents();
   if (!editor.grab().save(outputRoot + QStringLiteral("-palette.png"), "PNG"))
     return 14;
   // Custom color control in the open palette strip.
-  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(470, 134));
-  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(320, 200));
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(500, 134));
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(360, 200));
   // Freehand toolbar button.
-  QTest::mouseMove(&editor, QPoint(198, 92), 20);
+  QTest::mouseMove(&editor, QPoint(180, 92), 20);
   application.processEvents();
   if (editor.cursor().shape() != Qt::PointingHandCursor)
     return 12;

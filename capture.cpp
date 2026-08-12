@@ -252,6 +252,9 @@ QVector<WindowTarget> parseWindows(const QByteArray &json,
 }
 
 void drawAnnotation(QPainter &painter, const Annotation &annotation) {
+  if (annotation.kind == Annotation::Kind::Spotlight)
+    return;
+
   const qreal width = std::max<qreal>(2.0, annotation.size);
   QPen pen(annotation.color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
   painter.setPen(pen);
@@ -365,6 +368,76 @@ QRect pixelSelection(const CaptureData &capture, const QRectF &selection) {
 
 void paintAnnotation(QPainter &painter, const Annotation &annotation) {
   drawAnnotation(painter, annotation);
+}
+
+void paintSpotlights(QPainter &painter, const QImage &source,
+                     const QRectF &targetBounds, const QRectF &sourceRect,
+                     const QVector<Annotation> &annotations) {
+  if (source.isNull() || targetBounds.isEmpty() || sourceRect.isEmpty())
+    return;
+
+  QVector<const Annotation *> spotlights;
+  QPainterPath dimmed;
+  dimmed.addRect(targetBounds);
+  for (const Annotation &annotation : annotations) {
+    if (annotation.kind != Annotation::Kind::Spotlight)
+      continue;
+    const QRectF lens =
+        QRectF(annotation.start, annotation.end).normalized().intersected(
+            targetBounds);
+    if (lens.width() < 1 || lens.height() < 1)
+      continue;
+    QPainterPath opening;
+    opening.addEllipse(lens);
+    dimmed = dimmed.subtracted(opening);
+    spotlights.push_back(&annotation);
+  }
+  if (spotlights.isEmpty())
+    return;
+
+  painter.save();
+  painter.setClipRect(targetBounds);
+  painter.fillPath(dimmed, QColor(0, 0, 0, 154));
+  for (const Annotation *annotation : spotlights) {
+    const QRectF lens = QRectF(annotation->start, annotation->end).normalized();
+    const qreal magnification =
+        std::clamp(annotation->magnification, 1.0, 4.0);
+    QSizeF sampleSize(sourceRect.width() * lens.width() /
+                          targetBounds.width() / magnification,
+                      sourceRect.height() * lens.height() /
+                          targetBounds.height() / magnification);
+    sampleSize.setWidth(std::min(sampleSize.width(), sourceRect.width()));
+    sampleSize.setHeight(std::min(sampleSize.height(), sourceRect.height()));
+    const QPointF normalizedCenter(
+        (lens.center().x() - targetBounds.left()) / targetBounds.width(),
+        (lens.center().y() - targetBounds.top()) / targetBounds.height());
+    const QPointF sampleCenter(
+        sourceRect.left() + normalizedCenter.x() * sourceRect.width(),
+        sourceRect.top() + normalizedCenter.y() * sourceRect.height());
+    QRectF sample(sampleCenter.x() - sampleSize.width() / 2.0,
+                  sampleCenter.y() - sampleSize.height() / 2.0,
+                  sampleSize.width(), sampleSize.height());
+    sample.moveLeft(std::clamp(sample.left(), sourceRect.left(),
+                               sourceRect.right() - sample.width()));
+    sample.moveTop(std::clamp(sample.top(), sourceRect.top(),
+                              sourceRect.bottom() - sample.height()));
+
+    QPainterPath lensClip;
+    lensClip.addEllipse(lens);
+    painter.save();
+    painter.setClipPath(lensClip, Qt::IntersectClip);
+    painter.drawImage(lens, source, sample);
+    painter.restore();
+
+    const QColor outline = annotation->color.isValid()
+                               ? annotation->color
+                               : QColor(Qt::white);
+    painter.setPen(QPen(outline, std::max<qreal>(2.0, annotation->size / 2.0),
+                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawEllipse(lens);
+  }
+  painter.restore();
 }
 
 void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
@@ -567,6 +640,8 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
   painter.translate(marginX, marginY);
   painter.scale(scaleX, scaleY);
   painter.setClipRect(QRectF(QPointF(), selection.size()));
+  paintSpotlights(painter, cropped, QRectF(QPointF(), selection.size()),
+                  cropped.rect(), annotations);
   for (const Annotation &annotation : annotations)
     drawAnnotation(painter, annotation);
   painter.restore();

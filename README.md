@@ -14,7 +14,7 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
   capture stays in the window picker; Omasnap never substitutes a crop of the desktop.
 - Select/move/resize layers, mouse-wheel scaling, and eight external recropping handles.
 - Arrows, straight lines, smoothed freehand strokes, translucent highlighter strokes,
-  rectangles, numbered markers, and editable Neucha text.
+  spotlight/loupe lenses, rectangles, numbered markers, and editable Neucha text.
 - Per-layer preset or custom colors (including highlighter ink), undo/redo history,
   OCR-region capture,
   mesh-gradient backdrops, and rendered drop shadows.
@@ -208,6 +208,8 @@ Install the corresponding Tesseract language data before adding a language to
 | `A` | Arrow |
 | `L` | Straight line |
 | `F` | Freehand stroke |
+| `H` | Translucent highlighter stroke |
+| `S` | Spotlight/loupe; wheel adjusts magnification after selection |
 | `C` | Numbered marker |
 | `R` | Rectangle |
 | `T` | Neucha text |
@@ -270,8 +272,8 @@ QT_QPA_PLATFORM=offscreen \
 
 The smoke executable exercises region/window/fullscreen startup modes, capture selection,
 temporary snapshot updates, annotation tools, undo/redo, vector movement and scaling,
-text editing, OCR, native-DPI output, endpoint-only line selection, and external crop
-handles.
+spotlight/loupe rendering, text editing, OCR, native-DPI output, endpoint-only line
+selection, and external crop handles.
 
 `.github/workflows/build-linux.yml` performs the same release build and interaction smoke
 in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux

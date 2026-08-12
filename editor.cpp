@@ -35,11 +35,37 @@ constexpr std::array<const char *, 6> kColorNames{
     "#ff375f", "#ff9f0a", "#ffd60a", "#30d158", "#0a84ff", "#bf5af2"};
 constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
-constexpr qreal kToolbarWidth = 680;
+constexpr qreal kToolbarWidth = 720;
+constexpr qreal kMinimumSpotlightExtent = 16;
+
+qreal toolbarScale(qreal availableWidth) {
+  constexpr qreal sideMargins = 16.0;
+  return std::min<qreal>(
+      1.0,
+      std::max<qreal>(0.1, (availableWidth - sideMargins) / kToolbarWidth));
+}
+
+QPointF constrainedSpotlightEndpoint(const QPointF &point,
+                                     const QPointF &anchor,
+                                     const QPointF &original) {
+  const auto constrained = [](qreal value, qreal anchor, qreal original) {
+    if (std::abs(value - anchor) >= kMinimumSpotlightExtent)
+      return value;
+    qreal direction = original < anchor ? -1.0 : 1.0;
+    if (value < anchor)
+      direction = -1.0;
+    else if (value > anchor)
+      direction = 1.0;
+    return anchor + direction * kMinimumSpotlightExtent;
+  };
+  return {constrained(point.x(), anchor.x(), original.x()),
+          constrained(point.y(), anchor.y(), original.y())};
+}
 
 bool hasEndpointHandles(Annotation::Kind kind) {
   return kind == Annotation::Kind::Arrow || kind == Annotation::Kind::Line ||
-         kind == Annotation::Kind::Rectangle;
+         kind == Annotation::Kind::Rectangle ||
+         kind == Annotation::Kind::Spotlight;
 }
 
 bool showsSelectionBounds(Annotation::Kind kind) {
@@ -69,6 +95,8 @@ QString toolAction(CaptureEditor::Tool tool) {
     return QStringLiteral("tool-freehand");
   case CaptureEditor::Tool::Highlighter:
     return QStringLiteral("tool-highlighter");
+  case CaptureEditor::Tool::Spotlight:
+    return QStringLiteral("tool-spotlight");
   case CaptureEditor::Tool::Marker:
     return QStringLiteral("tool-marker");
   case CaptureEditor::Tool::Rectangle:
@@ -338,6 +366,15 @@ int CaptureEditor::annotationAt(const QPointF &point) const {
         if (QLineF(point, closest).length() <= tolerance)
           return index;
       }
+    } else if (annotation.kind == Annotation::Kind::Spotlight) {
+      const QRectF bounds = annotationBounds(annotation).adjusted(-7, -7, 7, 7);
+      if (bounds.width() <= 0 || bounds.height() <= 0)
+        continue;
+      const qreal x = (point.x() - bounds.center().x()) / (bounds.width() / 2.0);
+      const qreal y =
+          (point.y() - bounds.center().y()) / (bounds.height() / 2.0);
+      if (x * x + y * y <= 1.0)
+        return index;
     } else if (annotationBounds(annotation)
                    .adjusted(-7, -7, 7, 7)
                    .contains(point)) {
@@ -352,6 +389,14 @@ void CaptureEditor::scaleSelectedAnnotation(qreal factor) {
     return;
   recordEdit();
   Annotation &annotation = annotations_[selectedAnnotation_];
+  if (annotation.kind == Annotation::Kind::Spotlight) {
+    annotation.magnification =
+        std::clamp(annotation.magnification * factor, 1.0, 4.0);
+    setStatus(QStringLiteral("Spotlight magnification · %1× · wheel adjusts")
+                  .arg(annotation.magnification, 0, 'f', 1));
+    persistSnapshot();
+    return;
+  }
   const QPointF center = annotationBounds(annotation).center();
   const auto scaledPoint = [center, factor](const QPointF &point) {
     return center + (point - center) * factor;
@@ -380,12 +425,14 @@ void CaptureEditor::scaleSelectedAnnotation(qreal factor) {
 }
 
 QRectF CaptureEditor::colorPaletteRect() const {
-  constexpr qreal toolbarWidth = kToolbarWidth;
-  constexpr qreal buttonHeight = 36;
+  const qreal scale = toolbarScale(width());
+  const qreal toolbarWidth = kToolbarWidth * scale;
+  const qreal buttonHeight = 36 * scale;
   const qreal toolbarX = (width() - toolbarWidth) / 2.0;
   const qreal toolbarY =
       std::max<qreal>(10, editImageRect().top() - buttonHeight - 10);
-  const QRectF anchor(toolbarX + 320, toolbarY, 36, buttonHeight);
+  const QRectF anchor(toolbarX + 360 * scale, toolbarY, 36 * scale,
+                      buttonHeight);
   const qreal paletteWidth = 204;
   const qreal x = std::clamp(anchor.center().x() - paletteWidth / 2.0, 8.0,
                              std::max(8.0, width() - paletteWidth - 8.0));
@@ -403,12 +450,14 @@ QRectF CaptureEditor::customColorPanelRect() const {
 }
 
 QRectF CaptureEditor::textSizePanelRect() const {
-  constexpr qreal toolbarWidth = kToolbarWidth;
-  constexpr qreal buttonHeight = 36;
+  const qreal scale = toolbarScale(width());
+  const qreal toolbarWidth = kToolbarWidth * scale;
+  const qreal buttonHeight = 36 * scale;
   const qreal toolbarX = (width() - toolbarWidth) / 2.0;
   const qreal toolbarY =
       std::max<qreal>(10, editImageRect().top() - buttonHeight - 10);
-  const QRectF anchor(toolbarX + 280, toolbarY, 36, buttonHeight);
+  const QRectF anchor(toolbarX + 320 * scale, toolbarY, 36 * scale,
+                      buttonHeight);
   return {anchor.center().x() - 51, anchor.bottom() + 6, 102, 34};
 }
 
@@ -570,16 +619,18 @@ int CaptureEditor::windowInDirection(int current, int key) const {
 
 QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
   QVector<ToolbarButton> buttons;
-  const qreal height = 36;
-  const qreal gap = 4;
-  const qreal total = kToolbarWidth;
+  const qreal scale = toolbarScale(width());
+  const qreal height = 36 * scale;
+  const qreal gap = 4 * scale;
+  const qreal total = kToolbarWidth * scale;
   qreal x = (width() - total) / 2.0;
   const qreal y = std::max<qreal>(10, editImageRect().top() - height - 10);
   auto add = [&](qreal buttonWidth, QString action, QString label,
                  QString tooltip, QColor color = {}) {
-    buttons.push_back({QRectF(x, y, buttonWidth, height), std::move(action),
+    const qreal scaledWidth = buttonWidth * scale;
+    buttons.push_back({QRectF(x, y, scaledWidth, height), std::move(action),
                        std::move(label), std::move(tooltip), color});
-    x += buttonWidth + gap;
+    x += scaledWidth + gap;
   };
 
   add(36, QStringLiteral("tool-select"), {},
@@ -596,6 +647,9 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
   add(36, QStringLiteral("tool-highlighter"), {},
       QStringLiteral("Highlighter · H · Size %1 · Wheel")
           .arg(qRound(annotationSize_)));
+  add(36, QStringLiteral("tool-spotlight"), {},
+      QStringLiteral("Spotlight/Loupe · S · %1× · Wheel after selection")
+          .arg(spotlightMagnification_, 0, 'f', 1));
   add(36, QStringLiteral("tool-marker"), {},
       QStringLiteral("Number marker · C · Size %1 · Wheel")
           .arg(qRound(annotationSize_)));
@@ -989,6 +1043,8 @@ void CaptureEditor::handleToolbar(const QString &action) {
     tool_ = Tool::Freehand;
   else if (action == QStringLiteral("tool-highlighter"))
     tool_ = Tool::Highlighter;
+  else if (action == QStringLiteral("tool-spotlight"))
+    tool_ = Tool::Spotlight;
   else if (action == QStringLiteral("tool-marker"))
     tool_ = Tool::Marker;
   else if (action == QStringLiteral("tool-rectangle"))
@@ -1120,6 +1176,8 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     tool_ = Tool::Freehand;
   } else if (event->key() == Qt::Key_H) {
     tool_ = Tool::Highlighter;
+  } else if (event->key() == Qt::Key_S) {
+    tool_ = Tool::Spotlight;
   } else if (event->key() == Qt::Key_C || event->key() == Qt::Key_M) {
     tool_ = Tool::Marker;
   } else if (event->key() == Qt::Key_R) {
@@ -1225,11 +1283,18 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
             strokePoint += delta;
         }
       } else if (interaction_ == Interaction::ResizeStart) {
-        if (hasEndpointHandles(annotation.kind))
+        if (hasEndpointHandles(annotation.kind)) {
           annotation.start = point;
+          if (annotation.kind == Annotation::Kind::Spotlight)
+            annotation.start = constrainedSpotlightEndpoint(
+                point, annotation.end, originalAnnotation_.start);
+        }
       } else if (interaction_ == Interaction::ResizeEnd) {
         if (hasEndpointHandles(annotation.kind)) {
           annotation.end = point;
+          if (annotation.kind == Annotation::Kind::Spotlight)
+            annotation.end = constrainedSpotlightEndpoint(
+                point, annotation.start, originalAnnotation_.end);
         } else if (isStrokeKind(annotation.kind)) {
           const QRectF originalBounds = annotationBounds(originalAnnotation_);
           const qreal scaleX =
@@ -1521,6 +1586,30 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
     update();
     return;
   }
+  if (tool_ == Tool::Spotlight) {
+    const QRectF lens(dragStart_, end);
+    dragging_ = false;
+    if (lens.normalized().width() >= kMinimumSpotlightExtent &&
+        lens.normalized().height() >= kMinimumSpotlightExtent) {
+      recordEdit();
+      Annotation annotation;
+      annotation.kind = Annotation::Kind::Spotlight;
+      annotation.start = dragStart_;
+      annotation.end = end;
+      annotation.color = annotationColor();
+      annotation.size = annotationSize_;
+      annotation.magnification = spotlightMagnification_;
+      annotations_.push_back(std::move(annotation));
+      selectedAnnotation_ = annotations_.size() - 1;
+      tool_ = Tool::Select;
+      setStatus(QStringLiteral(
+                    "Spotlight added · wheel adjusts magnification · handles resize"));
+      persistSnapshot();
+      updatePointerCursor();
+    }
+    update();
+    return;
+  }
   if (QLineF(dragStart_, end).length() > 4) {
     recordEdit();
     Annotation annotation;
@@ -1563,6 +1652,11 @@ void CaptureEditor::wheelEvent(QWheelEvent *event) {
     annotationSize_ = std::clamp(annotationSize_ + step, 2.0, 12.0);
     setStatus(QStringLiteral("Size %1 · mouse wheel changes size")
                   .arg(qRound(annotationSize_)));
+  } else if (tool_ == Tool::Spotlight) {
+    spotlightMagnification_ =
+        std::clamp(spotlightMagnification_ + step * 0.25, 1.0, 4.0);
+    setStatus(QStringLiteral("Spotlight magnification · %1×")
+                  .arg(spotlightMagnification_, 0, 'f', 2));
   } else {
     QWidget::wheelEvent(event);
     return;
@@ -1705,27 +1799,43 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   painter.scale(editScale(), editScale());
   painter.save();
   painter.setClipRect(QRectF(QPointF(), selection_.size()));
+  Annotation dragPreview;
+  bool hasDragPreview = dragging_ && tool_ != Tool::Select;
+  if (hasDragPreview) {
+    if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
+      dragPreview.kind = tool_ == Tool::Highlighter
+                             ? Annotation::Kind::Highlighter
+                             : Annotation::Kind::Freehand;
+      dragPreview.points = freehandPoints_;
+    } else if (tool_ == Tool::Spotlight) {
+      dragPreview.kind = Annotation::Kind::Spotlight;
+      dragPreview.start = dragStart_;
+      dragPreview.end = toAnnotationPoint(cursor_);
+      dragPreview.magnification = spotlightMagnification_;
+    } else {
+      dragPreview.kind = (tool_ == Tool::Rectangle || tool_ == Tool::Ocr)
+                             ? Annotation::Kind::Rectangle
+                             : (tool_ == Tool::Line ? Annotation::Kind::Line
+                                                    : Annotation::Kind::Arrow);
+      dragPreview.start = dragStart_;
+      dragPreview.end = toAnnotationPoint(cursor_);
+    }
+    dragPreview.color =
+        tool_ == Tool::Ocr ? QColor(Qt::white) : annotationColor();
+    dragPreview.size = tool_ == Tool::Ocr ? 2.0 : annotationSize_;
+  }
+  QVector<Annotation> spotlightAnnotations = annotations_;
+  if (hasDragPreview && dragPreview.kind == Annotation::Kind::Spotlight)
+    spotlightAnnotations.push_back(dragPreview);
+  paintSpotlights(painter, capture_.source,
+                  QRectF(QPointF(), selection_.size()), sourceRect(selection_),
+                  spotlightAnnotations);
   for (int index = 0; index < annotations_.size(); ++index) {
     if (index != editingAnnotation_)
       paintAnnotation(painter, annotations_.at(index));
   }
-  if (dragging_ && tool_ != Tool::Select) {
-    Annotation preview;
-    if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
-      preview.kind = tool_ == Tool::Highlighter ? Annotation::Kind::Highlighter
-                                                : Annotation::Kind::Freehand;
-      preview.points = freehandPoints_;
-    } else {
-      preview.kind = (tool_ == Tool::Rectangle || tool_ == Tool::Ocr)
-                         ? Annotation::Kind::Rectangle
-                         : (tool_ == Tool::Line ? Annotation::Kind::Line
-                                                : Annotation::Kind::Arrow);
-      preview.start = dragStart_;
-      preview.end = toAnnotationPoint(cursor_);
-    }
-    preview.color = tool_ == Tool::Ocr ? QColor(Qt::white) : annotationColor();
-    preview.size = tool_ == Tool::Ocr ? 2.0 : annotationSize_;
-    paintAnnotation(painter, preview);
+  if (hasDragPreview) {
+    paintAnnotation(painter, dragPreview);
   } else if (tool_ == Tool::Marker && image.contains(cursor_)) {
     Annotation preview;
     preview.kind = Annotation::Kind::Marker;
@@ -1886,7 +1996,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
        {QStringLiteral("A"), QStringLiteral("Arrow")},
        {QStringLiteral("L"), QStringLiteral("Line")},
        {QStringLiteral("F / H"), QStringLiteral("Freehand / Highlighter")},
-       {QStringLiteral("C"), QStringLiteral("Marker")},
+       {QStringLiteral("S / C"), QStringLiteral("Spotlight / Marker")},
        {QStringLiteral("R"), QStringLiteral("Rectangle")},
        {QStringLiteral("T"), QStringLiteral("Text")},
        {QStringLiteral("Double click"), QStringLiteral("Edit text layer")},
@@ -1905,17 +2015,24 @@ void CaptureEditor::paintEdit(QPainter &painter) {
                        hoveredButton->tooltip);
   } else if (tool_ == Tool::Arrow || tool_ == Tool::Line ||
              tool_ == Tool::Freehand || tool_ == Tool::Highlighter ||
-             tool_ == Tool::Marker || tool_ == Tool::Text) {
+             tool_ == Tool::Spotlight || tool_ == Tool::Marker ||
+             tool_ == Tool::Text) {
     const QString selectedAction = toolAction(tool_);
     for (const ToolbarButton &button : buttons) {
       if (button.action == selectedAction) {
-        const QString tooltip =
-            tool_ == Tool::Text
-                ? QStringLiteral("Neucha · S  M  L · current %1 · Scroll wheel")
-                      .arg(QString::fromLatin1(kTextSizeNames.at(
-                          static_cast<std::size_t>(textSizeIndex_))))
-                : QStringLiteral("Size %1 · Scroll wheel")
-                      .arg(qRound(annotationSize_));
+        QString tooltip;
+        if (tool_ == Tool::Text) {
+          tooltip =
+              QStringLiteral("Neucha · S  M  L · current %1 · Scroll wheel")
+                  .arg(QString::fromLatin1(kTextSizeNames.at(
+                      static_cast<std::size_t>(textSizeIndex_))));
+        } else if (tool_ == Tool::Spotlight) {
+          tooltip = QStringLiteral("Magnification %1× · Scroll wheel")
+                        .arg(spotlightMagnification_, 0, 'f', 2);
+        } else {
+          tooltip = QStringLiteral("Size %1 · Scroll wheel")
+                        .arg(qRound(annotationSize_));
+        }
         drawInstantTooltip(painter, rect(), button.rect, tooltip);
         break;
       }

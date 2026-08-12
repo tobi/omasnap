@@ -39,6 +39,7 @@ public:
     Line,
     Freehand,
     Highlighter,
+    Spotlight,
     Marker,
     Rectangle,
     Text,
@@ -150,6 +151,7 @@ private:
   qreal customHue_ = 0.98;
   int nextMarker_ = 1;
   qreal annotationSize_ = 4.0;
+  qreal spotlightMagnification_ = 2.0;
   int textSizeIndex_ = 1;
   QVector<Annotation> annotations_;
   int selectedAnnotation_ = -1;

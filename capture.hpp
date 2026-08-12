@@ -42,6 +42,7 @@ struct Annotation {
     Line,
     Freehand,
     Highlighter,
+    Spotlight,
     Marker,
     Rectangle,
     Text
@@ -55,6 +56,7 @@ struct Annotation {
   qreal size = 4.0;
   int number = 0;
   QVector<QPointF> points;
+  qreal magnification = 2.0;
 };
 
 [[nodiscard]] bool loadCaptureFonts();
@@ -72,6 +74,9 @@ struct Annotation {
 [[nodiscard]] bool copyPngFileToClipboard(const QString &path, QString &error);
 [[nodiscard]] bool copyTextToClipboard(const QString &text, QString &error);
 void paintAnnotation(QPainter &painter, const Annotation &annotation);
+void paintSpotlights(QPainter &painter, const QImage &source,
+                     const QRectF &targetBounds, const QRectF &sourceRect,
+                     const QVector<Annotation> &annotations);
 void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
                             BackgroundStyle backgroundStyle);
 /** Creates or repairs a private directory owned by the current user. */
