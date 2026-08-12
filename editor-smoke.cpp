@@ -139,6 +139,203 @@ bool runHighlighterRenderingCheck(QString &error) {
   }
   return true;
 }
+
+bool runSecureRedactionChecks(QString &error) {
+  error = QStringLiteral("Secure redaction rendering check failed");
+  CaptureData capture;
+  capture.monitor.scale = 1.0;
+  capture.monitor.pixelSize = {96, 72};
+  capture.source = QImage(96, 72, QImage::Format_RGB32);
+  for (int y = 0; y < capture.source.height(); ++y) {
+    for (int x = 0; x < capture.source.width(); ++x) {
+      capture.source.setPixelColor(
+          x, y, QColor((x * 3) % 256, (y * 5) % 256, ((x + y) * 7) % 256));
+    }
+  }
+  capture.preview = capture.source;
+
+  Annotation pixelate;
+  pixelate.kind = Annotation::Kind::Redaction;
+  pixelate.start = {12, 12};
+  pixelate.end = {84, 60};
+  pixelate.redactionStyle = RedactionStyle::Pixelate;
+  pixelate.redactionSeed = 0x1234abcdU;
+  const QRect redactionBounds(12, 12, 72, 48);
+  const QImage first = renderCapture(capture, QRectF(0, 0, 96, 72), {pixelate},
+                                     BackgroundStyle::None);
+  const QImage repeated = renderCapture(capture, QRectF(0, 0, 96, 72),
+                                        {pixelate}, BackgroundStyle::None);
+  if (first.isNull() || first != repeated ||
+      first.pixelColor(2, 2) != capture.source.pixelColor(2, 2))
+    return false;
+
+  // Every exported mosaic cell is a flat synthetic color. No fine-grained
+  // source pixels survive inside a cell.
+  constexpr int blockSize = 12;
+  for (int top = redactionBounds.top(); top <= redactionBounds.bottom();
+       top += blockSize) {
+    for (int left = redactionBounds.left(); left <= redactionBounds.right();
+         left += blockSize) {
+      const QColor cell = first.pixelColor(left, top);
+      if (cell.alpha() != 255)
+        return false;
+      const int bottom =
+          std::min(top + blockSize - 1, redactionBounds.bottom());
+      const int right = std::min(left + blockSize - 1, redactionBounds.right());
+      for (int y = top; y <= bottom; ++y) {
+        for (int x = left; x <= right; ++x) {
+          if (first.pixelColor(x, y) != cell)
+            return false;
+        }
+      }
+    }
+  }
+
+  // Mirroring the source preserves the region's aggregate palette but changes
+  // every spatial relationship. Identical redaction output proves the mosaic
+  // does not retain source-block positions.
+  CaptureData mirroredCapture = capture;
+  for (int y = 0; y < capture.source.height(); ++y) {
+    for (int x = 0; x < capture.source.width(); ++x) {
+      mirroredCapture.source.setPixelColor(
+          x, y, capture.source.pixelColor(capture.source.width() - x - 1, y));
+    }
+  }
+  mirroredCapture.preview = mirroredCapture.source;
+  const QImage mirrored = renderCapture(mirroredCapture, QRectF(0, 0, 96, 72),
+                                        {pixelate}, BackgroundStyle::None);
+  if (first.copy(redactionBounds) != mirrored.copy(redactionBounds))
+    return false;
+
+  Annotation differentSeed = pixelate;
+  ++differentSeed.redactionSeed;
+  const QImage reseeded = renderCapture(capture, QRectF(0, 0, 96, 72),
+                                        {differentSeed}, BackgroundStyle::None);
+  if (first.copy(redactionBounds) == reseeded.copy(redactionBounds))
+    return false;
+
+  Annotation solid = pixelate;
+  solid.redactionStyle = RedactionStyle::Solid;
+  const QImage solidOutput = renderCapture(capture, QRectF(0, 0, 96, 72),
+                                           {solid}, BackgroundStyle::None);
+  const QColor solidColor(QStringLiteral("#121216"));
+  for (int y = redactionBounds.top(); y <= redactionBounds.bottom(); ++y) {
+    for (int x = redactionBounds.left(); x <= redactionBounds.right(); ++x) {
+      if (solidOutput.pixelColor(x, y) != solidColor)
+        return false;
+    }
+  }
+
+  Annotation line;
+  line.kind = Annotation::Kind::Line;
+  line.start = {12, 36};
+  line.end = {83, 36};
+  line.color = Qt::white;
+  line.size = 4;
+  const QImage annotated = renderCapture(capture, QRectF(0, 0, 96, 72),
+                                         {solid, line}, BackgroundStyle::None);
+  if (annotated.pixelColor(48, 36) != QColor(Qt::white))
+    return false;
+
+  Annotation clipped = solid;
+  clipped.start = {-10, -10};
+  clipped.end = {20, 20};
+  const QImage clippedOutput = renderCapture(capture, QRectF(0, 0, 96, 72),
+                                             {clipped}, BackgroundStyle::None);
+  if (clippedOutput.pixelColor(0, 0) != solidColor ||
+      clippedOutput.pixelColor(21, 21) != capture.source.pixelColor(21, 21))
+    return false;
+
+  CaptureData highDpi = capture;
+  highDpi.monitor.scale = 2.0;
+  highDpi.monitor.pixelSize = {192, 144};
+  highDpi.source = capture.source.scaled(192, 144, Qt::IgnoreAspectRatio,
+                                         Qt::SmoothTransformation);
+  highDpi.preview = capture.source;
+  Annotation highDpiSolid = solid;
+  highDpiSolid.start = {10, 10};
+  highDpiSolid.end = {30, 30};
+  const QImage highDpiOutput = renderCapture(
+      highDpi, QRectF(0, 0, 96, 72), {highDpiSolid}, BackgroundStyle::None);
+  if (highDpiOutput.size() != QSize(192, 144) ||
+      highDpiOutput.pixelColor(20, 20) != solidColor ||
+      highDpiOutput.pixelColor(59, 59) != solidColor ||
+      highDpiOutput.pixelColor(61, 61) == solidColor)
+    return false;
+
+  // Fractional crop rounding can force a one-pixel smooth resize. Redact the
+  // native source first so protected colors cannot bleed just outside the
+  // final mask through the resampling kernel.
+  CaptureData fractional;
+  fractional.monitor.scale = 1.25;
+  fractional.preview = QImage(100, 100, QImage::Format_RGB32);
+  fractional.preview.fill(Qt::white);
+  fractional.source = QImage(125, 125, QImage::Format_RGB32);
+  fractional.source.fill(Qt::white);
+  for (int y = 13; y <= 38; ++y) {
+    for (int x = 13; x <= 38; ++x)
+      fractional.source.setPixelColor(x, y, Qt::red);
+  }
+  Annotation fractionalSolid;
+  fractionalSolid.kind = Annotation::Kind::Redaction;
+  fractionalSolid.redactionStyle = RedactionStyle::Solid;
+  fractionalSolid.start = {10, 10};
+  fractionalSolid.end = {30, 30};
+  const QImage fractionalOutput =
+      renderCapture(fractional, QRectF(1, 1, 81, 81), {fractionalSolid},
+                    BackgroundStyle::None);
+  const QColor outsideHorizontal = fractionalOutput.pixelColor(12, 11);
+  const QColor outsideVertical = fractionalOutput.pixelColor(11, 12);
+  if (fractionalOutput.size() != QSize(101, 101) ||
+      outsideHorizontal.red() != outsideHorizontal.green() ||
+      outsideHorizontal.green() != outsideHorizontal.blue() ||
+      outsideVertical.red() != outsideVertical.green() ||
+      outsideVertical.green() != outsideVertical.blue() ||
+      fractionalOutput.pixelColor(12, 12) != solidColor)
+    return false;
+
+  CaptureData matchingFractional;
+  matchingFractional.monitor.scale = 1.25;
+  matchingFractional.preview = QImage(160, 160, QImage::Format_RGB32);
+  matchingFractional.preview.fill(Qt::white);
+  matchingFractional.source = QImage(200, 200, QImage::Format_RGB32);
+  matchingFractional.source.fill(Qt::white);
+  for (int y = 13; y <= 26; ++y) {
+    for (int x = 13; x <= 26; ++x)
+      matchingFractional.source.setPixelColor(x, y, Qt::red);
+  }
+  Annotation matchingSolid;
+  matchingSolid.kind = Annotation::Kind::Redaction;
+  matchingSolid.redactionStyle = RedactionStyle::Solid;
+  matchingSolid.start = {10.75, 10.75};
+  matchingSolid.end = {20.75, 20.75};
+  const QImage matchingOutput =
+      renderCapture(matchingFractional, QRectF(0.08, 0.08, 79.68, 79.68),
+                    {matchingSolid}, BackgroundStyle::None);
+  if (matchingOutput.size() != QSize(100, 100) ||
+      matchingOutput.pixelColor(26, 26) != solidColor)
+    return false;
+
+  CaptureData nonIntegralSourceScale;
+  nonIntegralSourceScale.monitor.scale = 1.5;
+  nonIntegralSourceScale.preview = QImage(1707, 100, QImage::Format_RGB32);
+  nonIntegralSourceScale.preview.fill(Qt::white);
+  nonIntegralSourceScale.source = QImage(2561, 150, QImage::Format_RGB32);
+  nonIntegralSourceScale.source.fill(Qt::white);
+  for (int y = 0; y < nonIntegralSourceScale.source.height(); ++y)
+    nonIntegralSourceScale.source.setPixelColor(1500, y, Qt::red);
+  Annotation sourceScaleSolid;
+  sourceScaleSolid.kind = Annotation::Kind::Redaction;
+  sourceScaleSolid.redactionStyle = RedactionStyle::Solid;
+  sourceScaleSolid.start = {0, 0};
+  sourceScaleSolid.end = {1000, 100};
+  const QImage sourceScaleOutput =
+      renderCapture(nonIntegralSourceScale, QRectF(0, 0, 1707, 100),
+                    {sourceScaleSolid}, BackgroundStyle::None);
+  if (sourceScaleOutput.pixelColor(1500, 50) != solidColor)
+    return false;
+  return true;
+}
 } // namespace
 /** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
@@ -153,6 +350,10 @@ int main(int argc, char **argv) {
   if (!runHighlighterRenderingCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 69;
+  }
+  if (!runSecureRedactionChecks(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 71;
   }
   const QString outputRoot =
       argc > 1 ? QString::fromLocal8Bit(argv[1])
@@ -441,11 +642,155 @@ int main(int argc, char **argv) {
           outputRoot + QStringLiteral("-window-keyboard.png"), "PNG"))
     return 2;
 
+  {
+    CaptureEditor redactionEditor(capture);
+    redactionEditor.resize(800, 600);
+    redactionEditor.show();
+    application.processEvents();
+    QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 100));
+    QTest::mouseMove(&redactionEditor, QPoint(650, 470), 20);
+    QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(650, 470));
+    const QImage beforeRedaction(snapshotPath);
+    QTest::keyClick(&redactionEditor, Qt::Key_D);
+    QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(300, 200));
+    QTest::mouseMove(&redactionEditor, QPoint(420, 200), 20);
+    QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(420, 200));
+    application.processEvents();
+    if (QImage(snapshotPath) != beforeRedaction)
+      return 72;
+    QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(300, 200));
+    QTest::mouseMove(&redactionEditor, QPoint(420, 260), 20);
+    QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(420, 260));
+    application.processEvents();
+    const QImage pixelatedRedaction(snapshotPath);
+    if (pixelatedRedaction.isNull() || pixelatedRedaction == beforeRedaction)
+      return 73;
+
+    QTest::mouseClick(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(360, 230));
+    QTest::keyClick(&redactionEditor, Qt::Key_D);
+    application.processEvents();
+    const QImage solidRedaction(snapshotPath);
+    if (solidRedaction.isNull() || solidRedaction == pixelatedRedaction)
+      return 74;
+    QTest::keyClick(&redactionEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != pixelatedRedaction)
+      return 75;
+    QTest::keyClick(&redactionEditor, Qt::Key_Y, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != solidRedaction)
+      return 76;
+
+    QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(360, 230));
+    QTest::mouseMove(&redactionEditor, QPoint(380, 245), 20);
+    QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(380, 245));
+    application.processEvents();
+    const QImage movedRedaction(snapshotPath);
+    if (movedRedaction.isNull() || movedRedaction == solidRedaction)
+      return 77;
+    QTest::keyClick(&redactionEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != solidRedaction)
+      return 78;
+
+    QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(300, 200));
+    QTest::mouseMove(&redactionEditor, QPoint(280, 190), 20);
+    QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(280, 190));
+    application.processEvents();
+    if (QImage(snapshotPath) == solidRedaction ||
+        !redactionEditor.grab().save(
+            outputRoot + QStringLiteral("-secure-redaction.png"), "PNG"))
+      return 79;
+    QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(280, 190));
+    QTest::mouseMove(&redactionEditor, QPoint(420, 190), 20);
+    QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(420, 190));
+    application.processEvents();
+    if (QImage(snapshotPath) == beforeRedaction)
+      return 81;
+  }
+
+  {
+    CaptureEditor overlapEditor(capture);
+    overlapEditor.resize(800, 600);
+    overlapEditor.show();
+    application.processEvents();
+    QTest::mousePress(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 100));
+    QTest::mouseMove(&overlapEditor, QPoint(650, 470), 20);
+    QTest::mouseRelease(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(650, 470));
+    QTest::keyClick(&overlapEditor, Qt::Key_L);
+    QTest::mousePress(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(300, 300));
+    QTest::mouseMove(&overlapEditor, QPoint(500, 300), 20);
+    QTest::mouseRelease(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(500, 300));
+    QTest::keyClick(&overlapEditor, Qt::Key_D);
+    QTest::mousePress(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(350, 270));
+    QTest::mouseMove(&overlapEditor, QPoint(450, 330), 20);
+    QTest::mouseRelease(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(450, 330));
+    QTest::mouseClick(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(400, 300));
+    application.processEvents();
+    const QImage overlapUi = overlapEditor.grab().toImage();
+    if (overlapUi.pixelColor(300, 300) != QColor(QStringLiteral("#0a84ff")) ||
+        overlapUi.pixelColor(500, 300) != QColor(QStringLiteral("#0a84ff")) ||
+        !overlapUi.save(outputRoot + QStringLiteral("-redaction-overlap.png"),
+                        "PNG"))
+      return 80;
+
+    QTest::keyClick(&overlapEditor, Qt::Key_R);
+    QTest::mousePress(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(330, 250));
+    QTest::mouseMove(&overlapEditor, QPoint(470, 350), 20);
+    QTest::mouseRelease(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(470, 350));
+    QTest::mouseClick(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(400, 285));
+    application.processEvents();
+    const QImage enclosedRedactionUi = overlapEditor.grab().toImage();
+    if (enclosedRedactionUi.pixelColor(350, 270) !=
+            QColor(QStringLiteral("#0a84ff")) ||
+        enclosedRedactionUi.pixelColor(450, 330) !=
+            QColor(QStringLiteral("#0a84ff")))
+      return 84;
+  }
+
   CaptureEditor fullscreenEditor(capture,
                                  CaptureEditor::CaptureMode::Fullscreen);
   fullscreenEditor.resize(800, 600);
   fullscreenEditor.show();
   application.processEvents();
+  CaptureEditor compactToolbarEditor(capture,
+                                     CaptureEditor::CaptureMode::Fullscreen);
+  compactToolbarEditor.resize(720, 600);
+  compactToolbarEditor.show();
+  application.processEvents();
+  QTest::mouseMove(&compactToolbarEditor, QPoint(20, 45), 20);
+  application.processEvents();
+  QTest::mouseMove(&compactToolbarEditor, QPoint(700, 45), 20);
+  application.processEvents();
+  const QImage compactToolbarUi = compactToolbarEditor.grab().toImage();
+  if (compactToolbarUi.pixelColor(20, 45).alpha() < 240 ||
+      compactToolbarUi.pixelColor(700, 45).alpha() < 240 ||
+      !compactToolbarUi.save(
+          outputRoot + QStringLiteral("-compact-toolbar.png"), "PNG"))
+    return 83;
   CaptureEditor windowModeEditor(capture, CaptureEditor::CaptureMode::Window);
   windowModeEditor.resize(800, 600);
   windowModeEditor.show();

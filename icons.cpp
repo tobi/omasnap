@@ -56,6 +56,24 @@ void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
                      QStringLiteral("1"));
   } else if (action == QStringLiteral("tool-rectangle")) {
     painter.drawRoundedRect(QRectF(4, 4, 16, 16), 2, 2);
+  } else if (action == QStringLiteral("tool-redact")) {
+    QPainterPath shield;
+    shield.moveTo(12, 3);
+    shield.lineTo(20, 6);
+    shield.lineTo(19, 13);
+    shield.cubicTo(18.5, 17, 15.5, 20, 12, 21);
+    shield.cubicTo(8.5, 20, 5.5, 17, 5, 13);
+    shield.lineTo(4, 6);
+    shield.closeSubpath();
+    painter.drawPath(shield);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color);
+    for (int y = 8; y <= 14; y += 3) {
+      for (int x = 8; x <= 14; x += 3) {
+        if ((x + y) % 2 == 0)
+          painter.drawRect(QRectF(x, y, 3, 3));
+      }
+    }
   } else if (action == QStringLiteral("tool-text")) {
     painter.drawLine(QPointF(5, 5), QPointF(19, 5));
     painter.drawLine(QPointF(12, 5), QPointF(12, 19));

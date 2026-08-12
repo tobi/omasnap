@@ -35,6 +35,7 @@ struct CaptureData {
 };
 
 enum class BackgroundStyle { None, Aurora, Sunset, Lagoon, Violet };
+enum class RedactionStyle { Solid, Pixelate };
 
 struct Annotation {
   enum class Kind {
@@ -44,7 +45,8 @@ struct Annotation {
     Highlighter,
     Marker,
     Rectangle,
-    Text
+    Text,
+    Redaction
   };
 
   Kind kind = Kind::Arrow;
@@ -55,6 +57,10 @@ struct Annotation {
   qreal size = 4.0;
   int number = 0;
   QVector<QPointF> points;
+  RedactionStyle redactionStyle = RedactionStyle::Pixelate;
+  quint32 redactionSeed = 0;
+
+  bool operator==(const Annotation &) const = default;
 };
 
 [[nodiscard]] bool loadCaptureFonts();

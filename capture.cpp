@@ -252,6 +252,12 @@ QVector<WindowTarget> parseWindows(const QByteArray &json,
 }
 
 void drawAnnotation(QPainter &painter, const Annotation &annotation) {
+  // Redactions replace source pixels in renderCapture before ordinary vector
+  // annotations are painted. They must never be approximated by a translucent
+  // overlay here because that could leave recoverable source data in exports.
+  if (annotation.kind == Annotation::Kind::Redaction)
+    return;
+
   const qreal width = std::max<qreal>(2.0, annotation.size);
   QPen pen(annotation.color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
   painter.setPen(pen);
@@ -337,6 +343,138 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation) {
   painter.setPen(annotation.color);
   painter.setBrush(Qt::NoBrush);
   painter.drawText(annotation.start, annotation.text);
+}
+
+quint32 nextRedactionRandom(quint32 &state) {
+  if (state == 0)
+    state = 0x6d2b79f5U;
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return state;
+}
+
+QRect redactionPixelRect(const Annotation &annotation, const QSize &imageSize,
+                         qreal scaleX, qreal scaleY,
+                         const QPointF &originOffset) {
+  const QRectF logical(annotation.start, annotation.end);
+  const QRectF normalized = logical.normalized();
+  const int left = static_cast<int>(
+      std::floor(normalized.left() * scaleX + originOffset.x()));
+  const int top = static_cast<int>(
+      std::floor(normalized.top() * scaleY + originOffset.y()));
+  const int right = static_cast<int>(
+      std::ceil(normalized.right() * scaleX + originOffset.x()));
+  const int bottom = static_cast<int>(
+      std::ceil(normalized.bottom() * scaleY + originOffset.y()));
+  return QRect(left, top, std::max(0, right - left), std::max(0, bottom - top))
+      .intersected(QRect(QPoint(), imageSize));
+}
+
+QVector<QColor> aggregateRedactionPalette(const QImage &image,
+                                          const QRect &region) {
+  struct Bucket {
+    quint64 red = 0;
+    quint64 green = 0;
+    quint64 blue = 0;
+    quint64 count = 0;
+  };
+  std::array<Bucket, 64> buckets{};
+  // A bounded, uniform sample keeps live dragging responsive on 4K captures.
+  // Coordinates are used only to choose samples; their positions are discarded
+  // before the synthetic mosaic is generated.
+  constexpr int maximumSamples = 4096;
+  const qreal regionArea =
+      static_cast<qreal>(region.width()) * static_cast<qreal>(region.height());
+  const qreal sampleStride = std::max<qreal>(
+      1.0, std::sqrt(regionArea / static_cast<qreal>(maximumSamples)));
+  for (qreal sampleY = region.top() + sampleStride / 2.0;
+       sampleY < region.bottom() + 1.0; sampleY += sampleStride) {
+    for (qreal sampleX = region.left() + sampleStride / 2.0;
+         sampleX < region.right() + 1.0; sampleX += sampleStride) {
+      const QColor color = image.pixelColor(
+          std::clamp(static_cast<int>(sampleX), region.left(), region.right()),
+          std::clamp(static_cast<int>(sampleY), region.top(), region.bottom()));
+      const int bucketIndex = (color.red() >> 6) * 16 +
+                              (color.green() >> 6) * 4 + (color.blue() >> 6);
+      Bucket &bucket = buckets.at(static_cast<std::size_t>(bucketIndex));
+      bucket.red += static_cast<quint64>(color.red());
+      bucket.green += static_cast<quint64>(color.green());
+      bucket.blue += static_cast<quint64>(color.blue());
+      ++bucket.count;
+    }
+  }
+
+  std::array<int, 64> order{};
+  for (int index = 0; index < static_cast<int>(order.size()); ++index)
+    order.at(static_cast<std::size_t>(index)) = index;
+  std::ranges::sort(order, [&buckets](int first, int second) {
+    return buckets.at(static_cast<std::size_t>(first)).count >
+           buckets.at(static_cast<std::size_t>(second)).count;
+  });
+
+  QVector<QColor> palette;
+  palette.reserve(6);
+  for (const int bucketIndex : order) {
+    const Bucket &bucket = buckets.at(static_cast<std::size_t>(bucketIndex));
+    if (bucket.count == 0)
+      break;
+    palette.push_back(QColor(static_cast<int>(bucket.red / bucket.count),
+                             static_cast<int>(bucket.green / bucket.count),
+                             static_cast<int>(bucket.blue / bucket.count),
+                             255));
+    if (palette.size() == 6)
+      break;
+  }
+  if (palette.isEmpty())
+    palette.push_back(QColor(QStringLiteral("#121216")));
+  return palette;
+}
+
+void applyRedactions(QImage &image, const QVector<Annotation> &annotations,
+                     qreal scaleX, qreal scaleY,
+                     const QPointF &originOffset = {}) {
+  for (const Annotation &annotation : annotations) {
+    if (annotation.kind != Annotation::Kind::Redaction)
+      continue;
+    const QRect region = redactionPixelRect(annotation, image.size(), scaleX,
+                                            scaleY, originOffset);
+    if (region.isEmpty())
+      continue;
+    QVector<QColor> palette;
+    if (annotation.redactionStyle == RedactionStyle::Pixelate)
+      palette = aggregateRedactionPalette(image, region);
+
+    // Finish all source reads before activating a painter on the same image.
+    QPainter painter(&image);
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    if (annotation.redactionStyle == RedactionStyle::Solid) {
+      painter.fillRect(region, QColor(QStringLiteral("#121216")));
+      continue;
+    }
+
+    quint32 randomState = annotation.redactionSeed;
+    if (randomState == 0) {
+      randomState = static_cast<quint32>(region.x()) * 73856093U ^
+                    static_cast<quint32>(region.y()) * 19349663U ^
+                    static_cast<quint32>(region.width()) * 83492791U ^
+                    static_cast<quint32>(region.height()) * 2654435761U;
+    }
+    const int blockWidth = std::max(1, qRound(12.0 * scaleX));
+    const int blockHeight = std::max(1, qRound(12.0 * scaleY));
+    for (int y = region.top(); y <= region.bottom(); y += blockHeight) {
+      for (int x = region.left(); x <= region.right(); x += blockWidth) {
+        const QColor color = palette.at(
+            static_cast<qsizetype>(nextRedactionRandom(randomState) %
+                                   static_cast<quint32>(palette.size())));
+        painter.fillRect(QRect(x, y,
+                               std::min(blockWidth, region.right() - x + 1),
+                               std::min(blockHeight, region.bottom() - y + 1)),
+                         color);
+      }
+    }
+  }
 }
 
 QRect pixelSelection(const CaptureData &capture, const QRectF &selection) {
@@ -514,14 +652,27 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
   const bool highDpi = capture.monitor.scale > 1.0;
   const qreal scaleX = highDpi ? capture.monitor.scale : sourceScaleX;
   const qreal scaleY = highDpi ? capture.monitor.scale : sourceScaleY;
+  const QPointF sourceOriginOffset(
+      selection.left() * sourceScaleX - pixels.left(),
+      selection.top() * sourceScaleY - pixels.top());
+  bool resized = false;
   if (highDpi) {
     const QSize impliedSize(std::max(1, qRound(selection.width() * scaleX)),
                             std::max(1, qRound(selection.height() * scaleY)));
     if (cropped.size() != impliedSize) {
+      // Remove sensitive source pixels before SmoothTransformation can blend
+      // them outside the final redaction boundary. The crop may begin between
+      // native pixels, so preserve that fractional origin in local coordinates.
+      applyRedactions(cropped, annotations, sourceScaleX, sourceScaleY,
+                      sourceOriginOffset);
       cropped = cropped.scaled(impliedSize, Qt::IgnoreAspectRatio,
                                Qt::SmoothTransformation);
+      resized = true;
     }
   }
+  applyRedactions(cropped, annotations, resized ? scaleX : sourceScaleX,
+                  resized ? scaleY : sourceScaleY,
+                  resized ? QPointF{} : sourceOriginOffset);
   const bool hasBackground = backgroundStyle != BackgroundStyle::None;
   const int marginX =
       hasBackground ? static_cast<int>(std::round(64.0 * scaleX)) : 0;

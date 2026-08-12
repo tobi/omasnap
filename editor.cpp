@@ -21,6 +21,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QScreen>
 #include <QTimer>
 #include <QWheelEvent>
@@ -35,11 +36,20 @@ constexpr std::array<const char *, 6> kColorNames{
     "#ff375f", "#ff9f0a", "#ffd60a", "#30d158", "#0a84ff", "#bf5af2"};
 constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
-constexpr qreal kToolbarWidth = 680;
+constexpr qreal kToolbarWidth = 760;
+constexpr qreal kMinimumRedactionExtent = 5.0;
+
+qreal toolbarScale(qreal availableWidth) {
+  constexpr qreal sideMargins = 16.0;
+  return std::min<qreal>(
+      1.0,
+      std::max<qreal>(0.1, (availableWidth - sideMargins) / kToolbarWidth));
+}
 
 bool hasEndpointHandles(Annotation::Kind kind) {
   return kind == Annotation::Kind::Arrow || kind == Annotation::Kind::Line ||
-         kind == Annotation::Kind::Rectangle;
+         kind == Annotation::Kind::Rectangle ||
+         kind == Annotation::Kind::Redaction;
 }
 
 bool showsSelectionBounds(Annotation::Kind kind) {
@@ -73,12 +83,34 @@ QString toolAction(CaptureEditor::Tool tool) {
     return QStringLiteral("tool-marker");
   case CaptureEditor::Tool::Rectangle:
     return QStringLiteral("tool-rectangle");
+  case CaptureEditor::Tool::Redact:
+    return QStringLiteral("tool-redact");
   case CaptureEditor::Tool::Text:
     return QStringLiteral("tool-text");
   case CaptureEditor::Tool::Ocr:
     return QStringLiteral("tool-ocr");
   }
   return {};
+}
+
+QString redactionStyleName(RedactionStyle style) {
+  return style == RedactionStyle::Solid ? QStringLiteral("Solid")
+                                        : QStringLiteral("Pixelate");
+}
+
+qreal constrainedRedactionCoordinate(qreal candidate, qreal fixed,
+                                     qreal original) {
+  return original <= fixed
+             ? std::min(candidate, fixed - kMinimumRedactionExtent)
+             : std::max(candidate, fixed + kMinimumRedactionExtent);
+}
+
+QPointF constrainedRedactionEndpoint(const QPointF &candidate,
+                                     const QPointF &fixed,
+                                     const QPointF &original) {
+  return {
+      constrainedRedactionCoordinate(candidate.x(), fixed.x(), original.x()),
+      constrainedRedactionCoordinate(candidate.y(), fixed.y(), original.y())};
 }
 
 void drawStatusPill(QPainter &painter, const QRect &bounds,
@@ -301,14 +333,13 @@ QRectF CaptureEditor::annotationBounds(const Annotation &annotation) const {
 }
 
 int CaptureEditor::annotationAt(const QPointF &point) const {
-  for (int index = annotations_.size() - 1; index >= 0; --index) {
-    const Annotation &annotation = annotations_.at(index);
+  const auto containsPoint = [this, &point](const Annotation &annotation) {
     if (annotation.kind == Annotation::Kind::Arrow ||
         annotation.kind == Annotation::Kind::Line) {
       const QPointF delta = annotation.end - annotation.start;
       const qreal lengthSquared = delta.x() * delta.x() + delta.y() * delta.y();
       if (lengthSquared <= 0)
-        continue;
+        return false;
       const QPointF fromStart = point - annotation.start;
       const qreal t =
           std::clamp((fromStart.x() * delta.x() + fromStart.y() * delta.y()) /
@@ -317,7 +348,7 @@ int CaptureEditor::annotationAt(const QPointF &point) const {
       const QPointF closest = annotation.start + delta * t;
       if (QLineF(point, closest).length() <=
           std::max<qreal>(8.0, annotation.size + 4.0))
-        return index;
+        return true;
     } else if (isStrokeKind(annotation.kind)) {
       const qreal tolerance = strokeHitTolerance(annotation);
       for (int pointIndex = 1; pointIndex < annotation.points.size();
@@ -336,12 +367,35 @@ int CaptureEditor::annotationAt(const QPointF &point) const {
                        0.0, 1.0);
         const QPointF closest = segment.p1() + delta * t;
         if (QLineF(point, closest).length() <= tolerance)
-          return index;
+          return true;
       }
-    } else if (annotationBounds(annotation)
-                   .adjusted(-7, -7, 7, 7)
-                   .contains(point)) {
-      return index;
+    } else {
+      const QRectF bounds = annotationBounds(annotation);
+      if (annotation.kind == Annotation::Kind::Rectangle) {
+        const qreal tolerance = std::max<qreal>(7.0, annotation.size + 3.0);
+        const QRectF outer =
+            bounds.adjusted(-tolerance, -tolerance, tolerance, tolerance);
+        const QRectF inner =
+            bounds.adjusted(tolerance, tolerance, -tolerance, -tolerance);
+        return outer.contains(point) &&
+               (inner.isEmpty() || !inner.contains(point));
+      }
+      if (bounds.adjusted(-7, -7, 7, 7).contains(point))
+        return true;
+    }
+    return false;
+  };
+
+  // Redactions are always rendered into the source underlay, regardless of
+  // insertion order. Search visible vector annotations first so hit testing
+  // follows that same paint order when their bounds overlap a redaction.
+  for (const bool redactionsOnly : {false, true}) {
+    for (int index = annotations_.size() - 1; index >= 0; --index) {
+      const Annotation &annotation = annotations_.at(index);
+      if ((annotation.kind == Annotation::Kind::Redaction) != redactionsOnly)
+        continue;
+      if (containsPoint(annotation))
+        return index;
     }
   }
   return -1;
@@ -353,13 +407,22 @@ void CaptureEditor::scaleSelectedAnnotation(qreal factor) {
   recordEdit();
   Annotation &annotation = annotations_[selectedAnnotation_];
   const QPointF center = annotationBounds(annotation).center();
-  const auto scaledPoint = [center, factor](const QPointF &point) {
-    return center + (point - center) * factor;
+  qreal geometryFactor = factor;
+  if (annotation.kind == Annotation::Kind::Redaction) {
+    const QRectF bounds = annotationBounds(annotation);
+    if (bounds.width() > 0 && bounds.height() > 0) {
+      geometryFactor =
+          std::max({factor, kMinimumRedactionExtent / bounds.width(),
+                    kMinimumRedactionExtent / bounds.height()});
+    }
+  }
+  const auto scaledPoint = [center, geometryFactor](const QPointF &point) {
+    return center + (point - center) * geometryFactor;
   };
   if (hasEndpointHandles(annotation.kind)) {
     annotation.start = scaledPoint(annotation.start);
     annotation.end = scaledPoint(annotation.end);
-    annotation.size = std::clamp(annotation.size * factor, 2.0, 30.0);
+    annotation.size = std::clamp(annotation.size * geometryFactor, 2.0, 30.0);
   } else if (isStrokeKind(annotation.kind)) {
     for (QPointF &point : annotation.points)
       point = scaledPoint(point);
@@ -380,12 +443,14 @@ void CaptureEditor::scaleSelectedAnnotation(qreal factor) {
 }
 
 QRectF CaptureEditor::colorPaletteRect() const {
-  constexpr qreal toolbarWidth = kToolbarWidth;
-  constexpr qreal buttonHeight = 36;
+  const qreal scale = toolbarScale(width());
+  const qreal toolbarWidth = kToolbarWidth * scale;
+  const qreal buttonHeight = 36 * scale;
   const qreal toolbarX = (width() - toolbarWidth) / 2.0;
   const qreal toolbarY =
       std::max<qreal>(10, editImageRect().top() - buttonHeight - 10);
-  const QRectF anchor(toolbarX + 320, toolbarY, 36, buttonHeight);
+  const QRectF anchor(toolbarX + 360 * scale, toolbarY, 36 * scale,
+                      buttonHeight);
   const qreal paletteWidth = 204;
   const qreal x = std::clamp(anchor.center().x() - paletteWidth / 2.0, 8.0,
                              std::max(8.0, width() - paletteWidth - 8.0));
@@ -403,12 +468,14 @@ QRectF CaptureEditor::customColorPanelRect() const {
 }
 
 QRectF CaptureEditor::textSizePanelRect() const {
-  constexpr qreal toolbarWidth = kToolbarWidth;
-  constexpr qreal buttonHeight = 36;
+  const qreal scale = toolbarScale(width());
+  const qreal toolbarWidth = kToolbarWidth * scale;
+  const qreal buttonHeight = 36 * scale;
   const qreal toolbarX = (width() - toolbarWidth) / 2.0;
   const qreal toolbarY =
       std::max<qreal>(10, editImageRect().top() - buttonHeight - 10);
-  const QRectF anchor(toolbarX + 280, toolbarY, 36, buttonHeight);
+  const QRectF anchor(toolbarX + 320 * scale, toolbarY, 36 * scale,
+                      buttonHeight);
   return {anchor.center().x() - 51, anchor.bottom() + 6, 102, 34};
 }
 
@@ -432,7 +499,9 @@ void CaptureEditor::applyCustomColor(const QPointF &position) {
   }
   customColor_ = QColor::fromHsvF(customHue_, saturation, value);
   usingCustomColor_ = true;
-  if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size()) {
+  if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
+      annotations_.at(selectedAnnotation_).kind !=
+          Annotation::Kind::Redaction) {
     recordEdit();
     annotations_[selectedAnnotation_].color = customColor_;
     persistSnapshot();
@@ -570,16 +639,18 @@ int CaptureEditor::windowInDirection(int current, int key) const {
 
 QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
   QVector<ToolbarButton> buttons;
-  const qreal height = 36;
-  const qreal gap = 4;
-  const qreal total = kToolbarWidth;
+  const qreal scale = toolbarScale(width());
+  const qreal height = 36 * scale;
+  const qreal gap = 4 * scale;
+  const qreal total = kToolbarWidth * scale;
   qreal x = (width() - total) / 2.0;
   const qreal y = std::max<qreal>(10, editImageRect().top() - height - 10);
   auto add = [&](qreal buttonWidth, QString action, QString label,
                  QString tooltip, QColor color = {}) {
-    buttons.push_back({QRectF(x, y, buttonWidth, height), std::move(action),
+    const qreal scaledWidth = buttonWidth * scale;
+    buttons.push_back({QRectF(x, y, scaledWidth, height), std::move(action),
                        std::move(label), std::move(tooltip), color});
-    x += buttonWidth + gap;
+    x += scaledWidth + gap;
   };
 
   add(36, QStringLiteral("tool-select"), {},
@@ -601,6 +672,9 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-rectangle"), {},
       QStringLiteral("Rectangle · R"));
+  add(36, QStringLiteral("tool-redact"), {},
+      QStringLiteral("Redact · D · %1 · D again toggles")
+          .arg(redactionStyleName(redactionStyle_)));
   add(36, QStringLiteral("tool-text"), {},
       QStringLiteral("Neucha text · T · %1 · Wheel")
           .arg(QString::fromLatin1(
@@ -993,7 +1067,18 @@ void CaptureEditor::handleToolbar(const QString &action) {
     tool_ = Tool::Marker;
   else if (action == QStringLiteral("tool-rectangle"))
     tool_ = Tool::Rectangle;
-  else if (action == QStringLiteral("tool-text"))
+  else if (action == QStringLiteral("tool-redact")) {
+    if (tool_ == Tool::Redact) {
+      redactionStyle_ = redactionStyle_ == RedactionStyle::Solid
+                            ? RedactionStyle::Pixelate
+                            : RedactionStyle::Solid;
+    } else {
+      tool_ = Tool::Redact;
+    }
+    selectedAnnotation_ = -1;
+    setStatus(QStringLiteral("Redact: %1 · drag sensitive content · D toggles")
+                  .arg(redactionStyleName(redactionStyle_)));
+  } else if (action == QStringLiteral("tool-text"))
     tool_ = Tool::Text;
   else if (action == QStringLiteral("tool-ocr"))
     tool_ = Tool::Ocr;
@@ -1003,7 +1088,9 @@ void CaptureEditor::handleToolbar(const QString &action) {
     colorIndex_ = std::clamp(action.sliced(6).toInt(), 0, 5);
     usingCustomColor_ = false;
     customColorPickerOpen_ = false;
-    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size()) {
+    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
+        annotations_.at(selectedAnnotation_).kind !=
+            Annotation::Kind::Redaction) {
       recordEdit();
       annotations_[selectedAnnotation_].color = annotationColor();
       persistSnapshot();
@@ -1124,6 +1211,32 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     tool_ = Tool::Marker;
   } else if (event->key() == Qt::Key_R) {
     tool_ = Tool::Rectangle;
+  } else if (event->key() == Qt::Key_D) {
+    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
+        annotations_.at(selectedAnnotation_).kind ==
+            Annotation::Kind::Redaction) {
+      recordEdit();
+      Annotation &redaction = annotations_[selectedAnnotation_];
+      redaction.redactionStyle =
+          redaction.redactionStyle == RedactionStyle::Solid
+              ? RedactionStyle::Pixelate
+              : RedactionStyle::Solid;
+      setStatus(QStringLiteral("Selected redaction: %1 · D toggles")
+                    .arg(redactionStyleName(redaction.redactionStyle)));
+      persistSnapshot();
+    } else {
+      if (tool_ == Tool::Redact) {
+        redactionStyle_ = redactionStyle_ == RedactionStyle::Solid
+                              ? RedactionStyle::Pixelate
+                              : RedactionStyle::Solid;
+      } else {
+        tool_ = Tool::Redact;
+      }
+      selectedAnnotation_ = -1;
+      setStatus(
+          QStringLiteral("Redact: %1 · drag sensitive content · D toggles")
+              .arg(redactionStyleName(redactionStyle_)));
+    }
   } else if (event->key() == Qt::Key_T) {
     tool_ = Tool::Text;
   } else if (event->key() == Qt::Key_O) {
@@ -1141,7 +1254,9 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   } else if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_6) {
     colorIndex_ = event->key() - Qt::Key_1;
     usingCustomColor_ = false;
-    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size()) {
+    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
+        annotations_.at(selectedAnnotation_).kind !=
+            Annotation::Kind::Redaction) {
       recordEdit();
       annotations_[selectedAnnotation_].color = annotationColor();
       persistSnapshot();
@@ -1225,11 +1340,20 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
             strokePoint += delta;
         }
       } else if (interaction_ == Interaction::ResizeStart) {
-        if (hasEndpointHandles(annotation.kind))
-          annotation.start = point;
+        if (hasEndpointHandles(annotation.kind)) {
+          annotation.start =
+              annotation.kind == Annotation::Kind::Redaction
+                  ? constrainedRedactionEndpoint(point, annotation.end,
+                                                 originalAnnotation_.start)
+                  : point;
+        }
       } else if (interaction_ == Interaction::ResizeEnd) {
         if (hasEndpointHandles(annotation.kind)) {
-          annotation.end = point;
+          annotation.end =
+              annotation.kind == Annotation::Kind::Redaction
+                  ? constrainedRedactionEndpoint(point, annotation.start,
+                                                 originalAnnotation_.end)
+                  : point;
         } else if (isStrokeKind(annotation.kind)) {
           const QRectF originalBounds = annotationBounds(originalAnnotation_);
           const qreal scaleX =
@@ -1434,6 +1558,11 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
   } else {
     dragStart_ = point;
     dragging_ = true;
+    if (tool_ == Tool::Redact) {
+      activeRedactionSeed_ = QRandomGenerator::system()->generate();
+      if (activeRedactionSeed_ == 0)
+        activeRedactionSeed_ = 1;
+    }
     if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
       freehandPoints_.clear();
       freehandPoints_.reserve(256);
@@ -1521,23 +1650,42 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
     update();
     return;
   }
-  if (QLineF(dragStart_, end).length() > 4) {
+  const QRectF draggedRect(dragStart_, end);
+  const bool validRedaction =
+      tool_ != Tool::Redact ||
+      (draggedRect.normalized().width() >= kMinimumRedactionExtent &&
+       draggedRect.normalized().height() >= kMinimumRedactionExtent);
+  if (QLineF(dragStart_, end).length() > 4 && validRedaction) {
     recordEdit();
     Annotation annotation;
-    annotation.kind = tool_ == Tool::Rectangle
-                          ? Annotation::Kind::Rectangle
-                          : (tool_ == Tool::Line ? Annotation::Kind::Line
-                                                 : Annotation::Kind::Arrow);
+    if (tool_ == Tool::Redact) {
+      annotation.kind = Annotation::Kind::Redaction;
+      annotation.redactionStyle = redactionStyle_;
+      annotation.redactionSeed = activeRedactionSeed_;
+    } else {
+      annotation.kind = tool_ == Tool::Rectangle
+                            ? Annotation::Kind::Rectangle
+                            : (tool_ == Tool::Line ? Annotation::Kind::Line
+                                                   : Annotation::Kind::Arrow);
+    }
     annotation.start = dragStart_;
     annotation.end = end;
     annotation.color = annotationColor();
     annotation.size = annotationSize_;
     annotations_.push_back(std::move(annotation));
     selectedAnnotation_ = -1;
+    const bool redacted = tool_ == Tool::Redact;
     tool_ = Tool::Select;
-    setStatus(QStringLiteral("Layer added · Select tool chooses layers"));
+    setStatus(redacted
+                  ? QStringLiteral("%1 redaction added · select to move or "
+                                   "resize · D toggles style")
+                        .arg(redactionStyleName(redactionStyle_))
+                  : QStringLiteral("Layer added · Select tool chooses layers"));
     persistSnapshot();
     updatePointerCursor();
+  } else if (tool_ == Tool::Redact) {
+    setStatus(QStringLiteral(
+        "Redaction needs both width and height · drag a rectangle"));
   }
   dragging_ = false;
   update();
@@ -1695,9 +1843,35 @@ void CaptureEditor::paintEdit(QPainter &painter) {
 
   QPainterPath clip;
   clip.addRoundedRect(image, hasBackground ? 10 : 0, hasBackground ? 10 : 0);
+  QVector<Annotation> redactions;
+  for (const Annotation &annotation : annotations_) {
+    if (annotation.kind == Annotation::Kind::Redaction)
+      redactions.push_back(annotation);
+  }
+  if (dragging_ && tool_ == Tool::Redact) {
+    Annotation preview;
+    preview.kind = Annotation::Kind::Redaction;
+    preview.start = dragStart_;
+    preview.end = toAnnotationPoint(cursor_);
+    preview.redactionStyle = redactionStyle_;
+    preview.redactionSeed = activeRedactionSeed_;
+    redactions.push_back(std::move(preview));
+  }
   painter.save();
   painter.setClipPath(clip);
-  painter.drawImage(image, capture_.source, sourceRect(selection_));
+  if (redactions.isEmpty()) {
+    painter.drawImage(image, capture_.source, sourceRect(selection_));
+  } else {
+    if (redactionPreviewCache_.isNull() ||
+        cachedRedactionSelection_ != selection_ ||
+        cachedPreviewRedactions_ != redactions) {
+      cachedRedactionSelection_ = selection_;
+      cachedPreviewRedactions_ = redactions;
+      redactionPreviewCache_ = renderCapture(capture_, selection_, redactions,
+                                             BackgroundStyle::None);
+    }
+    painter.drawImage(image, redactionPreviewCache_);
+  }
   painter.restore();
 
   painter.save();
@@ -1706,10 +1880,11 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   painter.save();
   painter.setClipRect(QRectF(QPointF(), selection_.size()));
   for (int index = 0; index < annotations_.size(); ++index) {
-    if (index != editingAnnotation_)
+    if (index != editingAnnotation_ &&
+        annotations_.at(index).kind != Annotation::Kind::Redaction)
       paintAnnotation(painter, annotations_.at(index));
   }
-  if (dragging_ && tool_ != Tool::Select) {
+  if (dragging_ && tool_ != Tool::Select && tool_ != Tool::Redact) {
     Annotation preview;
     if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
       preview.kind = tool_ == Tool::Highlighter ? Annotation::Kind::Highlighter
@@ -1887,7 +2062,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
        {QStringLiteral("L"), QStringLiteral("Line")},
        {QStringLiteral("F / H"), QStringLiteral("Freehand / Highlighter")},
        {QStringLiteral("C"), QStringLiteral("Marker")},
-       {QStringLiteral("R"), QStringLiteral("Rectangle")},
+       {QStringLiteral("R / D"), QStringLiteral("Rectangle / Redact")},
        {QStringLiteral("T"), QStringLiteral("Text")},
        {QStringLiteral("Double click"), QStringLiteral("Edit text layer")},
        {QStringLiteral("1–6"), QStringLiteral("Color")},
@@ -1905,17 +2080,24 @@ void CaptureEditor::paintEdit(QPainter &painter) {
                        hoveredButton->tooltip);
   } else if (tool_ == Tool::Arrow || tool_ == Tool::Line ||
              tool_ == Tool::Freehand || tool_ == Tool::Highlighter ||
-             tool_ == Tool::Marker || tool_ == Tool::Text) {
+             tool_ == Tool::Marker || tool_ == Tool::Redact ||
+             tool_ == Tool::Text) {
     const QString selectedAction = toolAction(tool_);
     for (const ToolbarButton &button : buttons) {
       if (button.action == selectedAction) {
-        const QString tooltip =
-            tool_ == Tool::Text
-                ? QStringLiteral("Neucha · S  M  L · current %1 · Scroll wheel")
-                      .arg(QString::fromLatin1(kTextSizeNames.at(
-                          static_cast<std::size_t>(textSizeIndex_))))
-                : QStringLiteral("Size %1 · Scroll wheel")
-                      .arg(qRound(annotationSize_));
+        QString tooltip;
+        if (tool_ == Tool::Text) {
+          tooltip =
+              QStringLiteral("Neucha · S  M  L · current %1 · Scroll wheel")
+                  .arg(QString::fromLatin1(kTextSizeNames.at(
+                      static_cast<std::size_t>(textSizeIndex_))));
+        } else if (tool_ == Tool::Redact) {
+          tooltip = QStringLiteral("Redact · %1 · D toggles style")
+                        .arg(redactionStyleName(redactionStyle_));
+        } else {
+          tooltip = QStringLiteral("Size %1 · Scroll wheel")
+                        .arg(qRound(annotationSize_));
+        }
         drawInstantTooltip(painter, rect(), button.rect, tooltip);
         break;
       }

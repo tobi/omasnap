@@ -41,6 +41,7 @@ public:
     Highlighter,
     Marker,
     Rectangle,
+    Redact,
     Text,
     Ocr
   };
@@ -151,6 +152,11 @@ private:
   int nextMarker_ = 1;
   qreal annotationSize_ = 4.0;
   int textSizeIndex_ = 1;
+  RedactionStyle redactionStyle_ = RedactionStyle::Pixelate;
+  quint32 activeRedactionSeed_ = 0;
+  QRectF cachedRedactionSelection_;
+  QVector<Annotation> cachedPreviewRedactions_;
+  QImage redactionPreviewCache_;
   QVector<Annotation> annotations_;
   int selectedAnnotation_ = -1;
   int editingAnnotation_ = -1;
