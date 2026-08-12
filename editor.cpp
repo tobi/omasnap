@@ -1164,6 +1164,9 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
   } else {
     if (tool_ == Tool::Select && dragging_ &&
         interaction_ >= Interaction::CropTopLeft) {
+      if (cropDragImageRect_.width() <= 0.0 ||
+          cropDragImageRect_.height() <= 0.0)
+        return;
       const int handle = static_cast<int>(interaction_) -
                          static_cast<int>(Interaction::CropTopLeft);
       const QSizeF previewSize = capture_.preview.size();
