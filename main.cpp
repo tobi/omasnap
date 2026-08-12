@@ -16,6 +16,7 @@
 #include <QUrl>
 #include <QWindow>
 
+#include <cerrno>
 #include <csignal>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -31,10 +32,12 @@ public:
 
     struct sigaction sa{};
     sa.sa_handler = [](int) {
+      const int savedErrno = errno;
       const char byte = 1;
       const int fd = signalFd_;
       if (fd >= 0)
         static_cast<void>(::write(fd, &byte, sizeof(byte)));
+      errno = savedErrno;
     };
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;

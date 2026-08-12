@@ -224,15 +224,18 @@ protected:
     const QList<QUrl> urls{QUrl::fromLocalFile(path_)};
     mime->setUrls(urls);
     mime->setText(urls.constFirst().toLocalFile());
-    QFile file(path_);
-    if (file.open(QIODevice::ReadOnly))
-      mime->setData(QStringLiteral("image/png"), file.readAll());
 
-    QDrag *drag = new QDrag(this);
-    drag->setMimeData(mime);
-    drag->setPixmap(QPixmap::fromImage(image_.scaled(
+    QByteArray pngData;
+    QBuffer buffer(&pngData);
+    buffer.open(QIODevice::WriteOnly);
+    if (image_.save(&buffer, "PNG"))
+      mime->setData(QStringLiteral("image/png"), pngData);
+
+    QDrag drag(this);
+    drag.setMimeData(mime);
+    drag.setPixmap(QPixmap::fromImage(image_.scaled(
         256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
-    drag->exec(Qt::CopyAction | Qt::MoveAction);
+    drag.exec(Qt::CopyAction | Qt::MoveAction);
   }
 
   void wheelEvent(QWheelEvent *event) override {
