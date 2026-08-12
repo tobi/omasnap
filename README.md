@@ -14,7 +14,8 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
   capture stays in the window picker; Omasnap never substitutes a crop of the desktop.
 - Select/move/resize layers, mouse-wheel scaling, and eight external recropping handles.
 - Arrows, straight lines, smoothed freehand strokes, translucent highlighter strokes,
-  spotlight/loupe lenses, rectangles, numbered markers, and editable Neucha text.
+  ellipse, rectangle, or rounded-rectangle spotlight/loupe lenses, numbered markers,
+  and editable Neucha text.
 - Per-layer preset or custom colors (including highlighter ink), undo/redo history,
   OCR-region capture,
   mesh-gradient backdrops, and rendered drop shadows.
@@ -209,7 +210,7 @@ Install the corresponding Tesseract language data before adding a language to
 | `L` | Straight line |
 | `F` | Freehand stroke |
 | `H` | Translucent highlighter stroke |
-| `S` | Spotlight/loupe; wheel adjusts magnification after selection |
+| `S` | Spotlight/loupe; choose its shape from the popover, then use the wheel for magnification |
 | `C` | Numbered marker |
 | `R` | Rectangle |
 | `T` | Neucha text |

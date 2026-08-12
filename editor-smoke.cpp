@@ -10,11 +10,13 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QPainter>
+#include <QPainterPath>
 #include <QTemporaryDir>
 #include <QWheelEvent>
 #include <QtTest/QTest>
 
 #include <algorithm>
+#include <cstdio>
 
 namespace {
 /** Guards the working-snapshot lifecycle: create and overwrite in place. */
@@ -174,12 +176,42 @@ bool runSpotlightRenderingCheck(QString &error) {
     return false;
   }
 
+  const QPointF corner(51, 21);
+  if (spotlightPath(spotlight).contains(corner)) {
+    error = QStringLiteral("Ellipse spotlight included its bounding corner");
+    return false;
+  }
+  spotlight.spotlightShape = SpotlightShape::Rectangle;
+  const QImage rectangle = renderCapture(capture, QRectF(0, 0, 200, 100),
+                                         {spotlight}, BackgroundStyle::None);
+  if (!spotlightPath(spotlight).contains(corner) ||
+      rectangle.pixelColor(55, 25).red() < 60) {
+    error = QStringLiteral("Rectangle spotlight did not include its corners");
+    return false;
+  }
+  spotlight.spotlightShape = SpotlightShape::RoundedRectangle;
+  const QImage rounded = renderCapture(capture, QRectF(0, 0, 200, 100),
+                                       {spotlight}, BackgroundStyle::None);
+  const bool roundedCorner = spotlightPath(spotlight).contains(corner);
+  const bool roundedInterior =
+      spotlightPath(spotlight).contains(QPointF(60, 30));
+  const int roundedCornerRed = rounded.pixelColor(50, 20).red();
+  if (roundedCorner || !roundedInterior || roundedCornerRed > 35) {
+    error = QStringLiteral("Rounded spotlight geometry: corner=%1 interior=%2 "
+                           "corner-red=%3")
+                .arg(roundedCorner)
+                .arg(roundedInterior)
+                .arg(roundedCornerRed);
+    return false;
+  }
+
   CaptureData highDpi = capture;
   highDpi.monitor.scale = 2.0;
   highDpi.monitor.pixelSize = {400, 200};
   highDpi.source = capture.source.scaled(
       highDpi.monitor.pixelSize, Qt::IgnoreAspectRatio,
       Qt::SmoothTransformation);
+  spotlight.spotlightShape = SpotlightShape::Ellipse;
   const QImage highDpiRendered = renderCapture(
       highDpi, QRectF(0, 0, 200, 100), {spotlight}, BackgroundStyle::None);
   const int highDpiMagnified = highDpiRendered.pixelColor(250, 100).red();
@@ -206,7 +238,7 @@ int main(int argc, char **argv) {
     return 69;
   }
   if (!runSpotlightRenderingCheck(snapshotError)) {
-    qWarning().noquote() << snapshotError;
+    std::fprintf(stderr, "%s\n", qPrintable(snapshotError));
     return 71;
   }
   const QString outputRoot =
@@ -271,6 +303,12 @@ int main(int argc, char **argv) {
     application.processEvents();
     const QImage beforeSpotlight(snapshotPath);
     QTest::keyClick(&spotlightEditor, Qt::Key_S);
+    QTest::mouseMove(&spotlightEditor, QPoint(256, 138), 20);
+    application.processEvents();
+    if (spotlightEditor.cursor().shape() != Qt::PointingHandCursor)
+      return 81;
+    QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(256, 138));
     QTest::mousePress(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(300, 220));
     QTest::mouseMove(&spotlightEditor, QPoint(500, 380), 20);
@@ -280,6 +318,34 @@ int main(int argc, char **argv) {
     const QImage spotlightSnapshot(snapshotPath);
     if (spotlightSnapshot.isNull() || spotlightSnapshot == beforeSpotlight)
       return 72;
+    QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(400, 300));
+    QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(220, 138));
+    application.processEvents();
+    const QImage ellipseSnapshot(snapshotPath);
+    if (ellipseSnapshot == spotlightSnapshot)
+      return 82;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != spotlightSnapshot)
+      return 83;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Y, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != ellipseSnapshot)
+      return 84;
+    QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(400, 300));
+    QTest::mouseClick(&spotlightEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(292, 138));
+    application.processEvents();
+    if (QImage(snapshotPath) == ellipseSnapshot)
+      return 85;
+    QTest::keyClick(&spotlightEditor, Qt::Key_Z, Qt::ControlModifier);
+    QTest::keyClick(&spotlightEditor, Qt::Key_Z, Qt::ControlModifier);
+    application.processEvents();
+    if (QImage(snapshotPath) != spotlightSnapshot)
+      return 86;
     QWheelEvent magnifyWheel(QPointF(400, 300), QPointF(400, 300), {},
                              {0, 120}, Qt::NoButton, Qt::NoModifier,
                              Qt::NoScrollPhase, false);

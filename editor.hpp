@@ -91,6 +91,7 @@ private:
                                            const QPointF &second) const;
   [[nodiscard]] QRectF colorPaletteRect() const;
   [[nodiscard]] QRectF customColorPanelRect() const;
+  [[nodiscard]] QRectF spotlightShapePanelRect() const;
   [[nodiscard]] QRectF textSizePanelRect() const;
   [[nodiscard]] QVector<QRectF> cropHandleRects() const;
   [[nodiscard]] int cropHandleAt(const QPointF &point) const;
@@ -144,6 +145,7 @@ private:
   bool busy_ = false;
   bool colorPaletteOpen_ = false;
   bool customColorPickerOpen_ = false;
+  bool spotlightShapePanelOpen_ = false;
   bool usingCustomColor_ = false;
   int hoveredWindow_ = -1;
   int colorIndex_ = 0;
@@ -152,6 +154,7 @@ private:
   int nextMarker_ = 1;
   qreal annotationSize_ = 4.0;
   qreal spotlightMagnification_ = 2.0;
+  SpotlightShape spotlightShape_ = SpotlightShape::Ellipse;
   int textSizeIndex_ = 1;
   QVector<Annotation> annotations_;
   int selectedAnnotation_ = -1;

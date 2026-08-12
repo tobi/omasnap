@@ -11,6 +11,7 @@
 
 class QFont;
 class QPainter;
+class QPainterPath;
 class QProcess;
 
 struct MonitorInfo {
@@ -35,6 +36,7 @@ struct CaptureData {
 };
 
 enum class BackgroundStyle { None, Aurora, Sunset, Lagoon, Violet };
+enum class SpotlightShape { Ellipse, Rectangle, RoundedRectangle };
 
 struct Annotation {
   enum class Kind {
@@ -57,6 +59,7 @@ struct Annotation {
   int number = 0;
   QVector<QPointF> points;
   qreal magnification = 2.0;
+  SpotlightShape spotlightShape = SpotlightShape::Ellipse;
 };
 
 [[nodiscard]] bool loadCaptureFonts();
@@ -74,6 +77,7 @@ struct Annotation {
 [[nodiscard]] bool copyPngFileToClipboard(const QString &path, QString &error);
 [[nodiscard]] bool copyTextToClipboard(const QString &text, QString &error);
 void paintAnnotation(QPainter &painter, const Annotation &annotation);
+[[nodiscard]] QPainterPath spotlightPath(const Annotation &annotation);
 void paintSpotlights(QPainter &painter, const QImage &source,
                      const QRectF &targetBounds, const QRectF &sourceRect,
                      const QVector<Annotation> &annotations);

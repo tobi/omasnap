@@ -370,6 +370,23 @@ void paintAnnotation(QPainter &painter, const Annotation &annotation) {
   drawAnnotation(painter, annotation);
 }
 
+QPainterPath spotlightPath(const Annotation &annotation) {
+  const QRectF bounds = QRectF(annotation.start, annotation.end).normalized();
+  QPainterPath path;
+  if (annotation.spotlightShape == SpotlightShape::Ellipse) {
+    path.addEllipse(bounds);
+  } else if (annotation.spotlightShape == SpotlightShape::RoundedRectangle) {
+    const qreal shorterEdge = std::min(bounds.width(), bounds.height());
+    const qreal radius =
+        std::min(shorterEdge / 2.0,
+                 std::clamp(shorterEdge * 0.12, 3.0, 28.0));
+    path.addRoundedRect(bounds, radius, radius);
+  } else {
+    path.addRect(bounds);
+  }
+  return path;
+}
+
 void paintSpotlights(QPainter &painter, const QImage &source,
                      const QRectF &targetBounds, const QRectF &sourceRect,
                      const QVector<Annotation> &annotations) {
@@ -387,8 +404,10 @@ void paintSpotlights(QPainter &painter, const QImage &source,
             targetBounds);
     if (lens.width() < 1 || lens.height() < 1)
       continue;
-    QPainterPath opening;
-    opening.addEllipse(lens);
+    QPainterPath opening = spotlightPath(annotation);
+    QPainterPath targetClip;
+    targetClip.addRect(targetBounds);
+    opening = opening.intersected(targetClip);
     dimmed = dimmed.subtracted(opening);
     spotlights.push_back(&annotation);
   }
@@ -422,8 +441,7 @@ void paintSpotlights(QPainter &painter, const QImage &source,
     sample.moveTop(std::clamp(sample.top(), sourceRect.top(),
                               sourceRect.bottom() - sample.height()));
 
-    QPainterPath lensClip;
-    lensClip.addEllipse(lens);
+    const QPainterPath lensClip = spotlightPath(*annotation);
     painter.save();
     painter.setClipPath(lensClip, Qt::IntersectClip);
     painter.drawImage(lens, source, sample);
@@ -435,7 +453,7 @@ void paintSpotlights(QPainter &painter, const QImage &source,
     painter.setPen(QPen(outline, std::max<qreal>(2.0, annotation->size / 2.0),
                         Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter.setBrush(Qt::NoBrush);
-    painter.drawEllipse(lens);
+    painter.drawPath(lensClip);
   }
   painter.restore();
 }

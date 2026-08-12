@@ -52,6 +52,12 @@ void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
     painter.setPen(Qt::NoPen);
     painter.setBrush(color);
     painter.drawEllipse(QPointF(10.5, 10.5), 2.3, 2.3);
+  } else if (action == QStringLiteral("spotlight-shape-ellipse")) {
+    painter.drawEllipse(QRectF(3, 6, 18, 12));
+  } else if (action == QStringLiteral("spotlight-shape-rectangle")) {
+    painter.drawRect(QRectF(3, 6, 18, 12));
+  } else if (action == QStringLiteral("spotlight-shape-rounded")) {
+    painter.drawRoundedRect(QRectF(3, 6, 18, 12), 3, 3);
   } else if (action == QStringLiteral("tool-marker")) {
     painter.drawEllipse(QPointF(12, 12), 8, 8);
     QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
