@@ -511,7 +511,8 @@ QPointF CaptureEditor::toAnnotationPoint(const QPointF &position) const {
 }
 
 QRectF CaptureEditor::sourceRect(const QRectF &logicalRect) const {
-  if (capture_.preview.isNull() || capture_.source.isNull())
+  if (capture_.preview.isNull() || capture_.source.isNull() ||
+      capture_.preview.width() <= 0 || capture_.preview.height() <= 0)
     return {};
   const qreal scaleX =
       capture_.source.width() / static_cast<qreal>(capture_.preview.width());
