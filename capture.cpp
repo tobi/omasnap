@@ -190,10 +190,8 @@ bool parseMonitor(const QByteArray &json, MonitorInfo &monitor,
     const int rawWidth = object.value(QStringLiteral("width")).toInt();
     const int rawHeight = object.value(QStringLiteral("height")).toInt();
     const int transform = object.value(QStringLiteral("transform")).toInt();
-    int logicalWidth =
-        static_cast<int>(std::floor(rawWidth / std::max<qreal>(scale, 0.01)));
-    int logicalHeight =
-        static_cast<int>(std::floor(rawHeight / std::max<qreal>(scale, 0.01)));
+    int logicalWidth = qRound(rawWidth / std::max<qreal>(scale, 0.01));
+    int logicalHeight = qRound(rawHeight / std::max<qreal>(scale, 0.01));
     if (transform == 1 || transform == 3 || transform == 5 || transform == 7)
       std::swap(logicalWidth, logicalHeight);
 
