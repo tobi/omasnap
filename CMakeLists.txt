@@ -76,6 +76,22 @@ qt_add_executable(omasnap-smoke
   editor.cpp
   editor.hpp
 )
+
+qt_add_executable(omasnap-quick-output-smoke
+  quick-output-smoke.cpp
+  capture.cpp
+  capture.hpp
+  surface-capture.cpp
+  ${PROTOCOL_SOURCES}
+)
+target_include_directories(omasnap-quick-output-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_features(omasnap-quick-output-smoke PRIVATE cxx_std_23)
+target_compile_options(omasnap-quick-output-smoke PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(omasnap-quick-output-smoke PRIVATE
+  Qt6::Core
+  Qt6::Gui
+  PkgConfig::WaylandClient
+)
 qt_add_resources(omasnap-smoke "capture-fonts-smoke"
   PREFIX "/fonts"
   BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets"

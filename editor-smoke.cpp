@@ -15,8 +15,12 @@
 #include <QtTest/QTest>
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
 #include <csignal>
+#include <sys/inotify.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 namespace {
 /** Guards the working-snapshot lifecycle: create and overwrite in place. */
@@ -190,6 +194,29 @@ bool runHighlighterRenderingCheck(QString &error) {
   }
   return true;
 }
+
+/** Counts atomic commits to the working snapshot after a quick capture. */
+int snapshotCommitCount(int fd, const QString &snapshotPath) {
+  const QByteArray target = QFileInfo(snapshotPath).fileName().toUtf8();
+  std::array<char, 4096> buffer{};
+  int count = 0;
+  for (;;) {
+    const ssize_t length = ::read(fd, buffer.data(), buffer.size());
+    if (length < 0 && errno == EINTR)
+      continue;
+    if (length <= 0)
+      break;
+    for (ssize_t offset = 0; offset < length;) {
+      const auto *event = reinterpret_cast<const inotify_event *>(
+          buffer.data() + offset);
+      if ((event->mask & (IN_CREATE | IN_MOVED_TO)) != 0 && event->len > 0 &&
+          QByteArray(event->name) == target)
+        ++count;
+      offset += sizeof(inotify_event) + event->len;
+    }
+  }
+  return count;
+}
 } // namespace
 /** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
@@ -253,6 +280,44 @@ int main(int argc, char **argv) {
   capture.windows = {
       {{80, 80, 300, 220}, QStringLiteral("1"), QStringLiteral("first")},
       {{420, 120, 300, 320}, QStringLiteral("2"), QStringLiteral("second")}};
+
+  {
+    CaptureEditor quickEditor(capture, CaptureEditor::CaptureMode::Region,
+                              QuickOutputMode::Save);
+    quickEditor.resize(800, 600);
+    quickEditor.show();
+    application.processEvents();
+    QTest::mousePress(&quickEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 100));
+    QTest::mouseMove(&quickEditor, QPoint(650, 470), 20);
+    const int snapshotWatch = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    const int watch = snapshotWatch >= 0
+                          ? ::inotify_add_watch(
+                                snapshotWatch,
+                                QFile::encodeName(secureRuntimeDirectory())
+                                    .constData(),
+                                IN_CREATE | IN_MOVED_TO)
+                          : -1;
+    if (watch < 0) {
+      if (snapshotWatch >= 0)
+        ::close(snapshotWatch);
+      return 75;
+    }
+    QTest::mouseRelease(&quickEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(650, 470));
+    application.processEvents();
+    const int snapshotCommits = snapshotCommitCount(snapshotWatch, snapshotPath);
+    ::inotify_rm_watch(snapshotWatch, watch);
+    ::close(snapshotWatch);
+    const QStringList files =
+        QDir(savedRoot).entryList({QStringLiteral("*.png")}, QDir::Files);
+    if (quickEditor.isVisible() || files.size() != 1 ||
+        QImage(QDir(savedRoot).filePath(files.constFirst())).isNull())
+      return 73;
+    if (snapshotCommits != 1)
+      return 76;
+  }
+  QDir(savedRoot).removeRecursively();
 
   CaptureEditor editor(capture);
   editor.resize(800, 600);

@@ -171,8 +171,9 @@ QString backgroundName(BackgroundStyle style) {
 } // namespace
 
 CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
-                             QWidget *parent)
-    : QWidget(parent), capture_(std::move(capture)) {
+                             QuickOutputMode quickOutput, QWidget *parent)
+    : QWidget(parent), capture_(std::move(capture)),
+      quickOutputMode_(quickOutput) {
   setWindowTitle(QStringLiteral("Omasnap"));
   setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                  Qt::WindowStaysOnTopHint);
@@ -762,6 +763,15 @@ void CaptureEditor::enterEdit(QString status) {
   redoStack_.clear();
   setStatus(std::move(status));
   updatePointerCursor();
+  if (quickOutputMode_ != QuickOutputMode::None) {
+    const OutputMode output =
+        quickOutputMode_ == QuickOutputMode::Copy
+            ? OutputMode::Copy
+            : quickOutputMode_ == QuickOutputMode::Save ? OutputMode::Save
+                                                        : OutputMode::Both;
+    finish(output);
+    return;
+  }
   persistSnapshot();
 }
 

@@ -158,6 +158,11 @@ omasnap smart       # maps to region selection
 These options choose what is initially selected; the editor still controls whether the
 result is copied, saved, or both.
 
+Quick output skips the annotation editor. Add `--copy` to copy only, `--save` to save
+only, or both flags to copy and save. Region and window captures output after selection;
+fullscreen captures output immediately. Quick output cannot be combined with `--file` or
+`--pin`.
+
 ### Edit an existing image
 
 Point omasnap at any readable image and it opens straight into the annotation editor

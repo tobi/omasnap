@@ -19,6 +19,7 @@ public:
 
   explicit CaptureEditor(CaptureData capture,
                          CaptureMode mode = CaptureMode::Region,
+                         QuickOutputMode quickOutput = QuickOutputMode::None,
                          QWidget *parent = nullptr);
   ~CaptureEditor() override;
 
@@ -161,6 +162,7 @@ private:
   bool dragStartStateValid_ = false;
   bool dragChanged_ = false;
   QString snapshotPath_;
+  QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
   int pinCount_ = 0;
   QString status_ =
       QStringLiteral("Drag to select an area · Space selects a window");

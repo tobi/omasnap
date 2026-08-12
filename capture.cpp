@@ -589,6 +589,37 @@ bool copyPngFileToClipboard(const QString &path, QString &error) {
   return copyToWaylandClipboard(QStringLiteral("image/png"), png, error);
 }
 
+bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
+  if (image.isNull() || mode == QuickOutputMode::None) {
+    error = QStringLiteral("Could not prepare screenshot snapshot");
+    return false;
+  }
+  const QString path = temporarySnapshotPath();
+  if (path.isEmpty() || !saveTemporarySnapshot(image, path, error))
+    return false;
+
+  if (mode == QuickOutputMode::Copy || mode == QuickOutputMode::Both) {
+    if (!copyPngFileToClipboard(path, error)) {
+      QFile::remove(path);
+      return false;
+    }
+  }
+  if (mode == QuickOutputMode::Save || mode == QuickOutputMode::Both) {
+    const QString saved = moveSnapshotToScreenshots(path, error);
+    if (saved.isEmpty())
+      return false;
+    if (mode == QuickOutputMode::Save)
+      sendCaptureNotification(QStringLiteral("Screenshot saved"), saved);
+    else
+      sendCaptureNotification(QStringLiteral("Screenshot saved and copied"),
+                              saved);
+  } else {
+    QFile::remove(path);
+    sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));
+  }
+  return true;
+}
+
 QString moveSnapshotToScreenshots(const QString &sourcePath, QString &error) {
   const QString targetPath = screenshotTargetPath(error);
   if (targetPath.isEmpty())
