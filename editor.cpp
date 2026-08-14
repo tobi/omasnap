@@ -1076,8 +1076,22 @@ void CaptureEditor::runOcr(const QRectF &localSelection) {
     return;
   busy_ = true;
   setStatus(QStringLiteral("Reading selected text…"));
+
+  QVector<Annotation> ocrAnnotations;
+  const QPointF offset = selection_.topLeft() - target.topLeft();
+  for (const Annotation &annotation : annotations_) {
+    if (annotation.kind != Annotation::Kind::Redaction)
+      continue;
+    Annotation adjusted = annotation;
+    adjusted.start += offset;
+    adjusted.end += offset;
+    for (QPointF &point : adjusted.points)
+      point += offset;
+    ocrAnnotations.push_back(std::move(adjusted));
+  }
+
   const QImage image =
-      renderCapture(capture_, target, {}, BackgroundStyle::None);
+      renderCapture(capture_, target, ocrAnnotations, BackgroundStyle::None);
   ocrWatcher_.setFuture(QtConcurrent::run([image] {
     OcrResult result;
     result.text = recognizeText(image, result.error);

@@ -1,6 +1,7 @@
 /** @fileoverview Captures, renders, saves, and shares screenshots. */
 #include "capture.hpp"
 
+#include <QBuffer>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -961,20 +962,9 @@ bool copyTextToClipboard(const QString &text, QString &error) {
 }
 
 QString recognizeText(const QImage &image, QString &error) {
-  const QString inputTemplate =
-      runtimePath(QStringLiteral("omasnap-ocr-XXXXXX.png"));
-  if (inputTemplate.isEmpty()) {
-    error = QStringLiteral("Could not create private runtime directory");
-    return {};
-  }
-  QTemporaryFile input(inputTemplate);
-  if (!input.open()) {
-    error = input.errorString();
-    return {};
-  }
-  const QString path = input.fileName();
-  input.close();
-  if (!image.save(path, "PNG")) {
+  QByteArray payload;
+  QBuffer buffer(&payload);
+  if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG")) {
     error = QStringLiteral("Could not prepare image for OCR");
     return {};
   }
@@ -986,12 +976,13 @@ QString recognizeText(const QImage &image, QString &error) {
   languages = languages.trimmed();
   const ProcessResult result = runProcess(
       QStringLiteral("tesseract"),
-      {path, QStringLiteral("stdout"), QStringLiteral("--oem"),
-       QStringLiteral("1"), QStringLiteral("--psm"), QStringLiteral("6"),
-       QStringLiteral("-l"), languages, QStringLiteral("--dpi"),
-       QStringLiteral("300"), QStringLiteral("-c"),
-       QStringLiteral("preserve_interword_spaces=1")},
-      {}, 30000);
+      {QStringLiteral("stdin"), QStringLiteral("stdout"),
+       QStringLiteral("--oem"), QStringLiteral("1"),
+       QStringLiteral("--psm"), QStringLiteral("6"),
+       QStringLiteral("-l"), languages,
+       QStringLiteral("--dpi"), QStringLiteral("300"),
+       QStringLiteral("-c"), QStringLiteral("preserve_interword_spaces=1")},
+      payload, 30000);
   if (!result.finished || result.exitCode != 0) {
     error = QStringLiteral("OCR failed for languages %1: %2")
                 .arg(languages, QString::fromUtf8(result.error).trimmed());
