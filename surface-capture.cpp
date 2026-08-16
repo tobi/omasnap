@@ -1,6 +1,8 @@
 /** @fileoverview Captures native window surfaces through Wayland protocols. */
 #include "capture.hpp"
 
+#include "kwin.hpp"
+
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
@@ -372,9 +374,11 @@ bool captureWindowSurface(const WindowTarget &window, QImage &image,
                           QString &error) {
   if (window.stableId.isEmpty()) {
     error =
-        QStringLiteral("Hyprland did not provide a stable window identifier");
+        QStringLiteral("Compositor did not provide a stable window identifier");
     return false;
   }
+  if (kwinSession())
+    return kwinCaptureWindowSurface(window, image, error);
 
   CaptureState state;
   state.display = wl_display_connect(nullptr);

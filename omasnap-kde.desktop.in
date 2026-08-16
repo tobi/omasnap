@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=Omasnap
+Comment=Capture and annotate a screenshot
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/omasnap
+Icon=camera-photo
+Terminal=false
+NoDisplay=true
+Categories=Graphics;
+StartupNotify=false
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
+Actions=region;windows;fullscreen;
+
+[Desktop Action region]
+Name=Capture Region
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/omasnap region
+
+[Desktop Action windows]
+Name=Capture Window
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/omasnap windows
+
+[Desktop Action fullscreen]
+Name=Capture Monitor
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/omasnap fullscreen

@@ -2,16 +2,23 @@ cmake_minimum_required(VERSION 3.24)
 project(omasnap VERSION 1.12.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 
+option(OMASNAP_KDE "Build the KDE Plasma (KWin) backend" OFF)
+
 find_package(PkgConfig REQUIRED)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Concurrent Core Gui Test Widgets)
+if(OMASNAP_KDE)
+  find_package(Qt6 6.8 REQUIRED COMPONENTS DBus)
+endif()
 find_package(LayerShellQt REQUIRED)
 pkg_check_modules(WaylandClient REQUIRED IMPORTED_TARGET wayland-client)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
+set(WAYLAND_PROTOCOLS_DIR "/usr/share/wayland-protocols" CACHE PATH
+  "Root of the wayland-protocols XML tree")
 set(PROTOCOL_XMLS
-  /usr/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml
-  /usr/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml
-  /usr/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml
+  ${WAYLAND_PROTOCOLS_DIR}/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml
+  ${WAYLAND_PROTOCOLS_DIR}/staging/ext-image-capture-source/ext-image-capture-source-v1.xml
+  ${WAYLAND_PROTOCOLS_DIR}/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml
 )
 set(PROTOCOL_SOURCES)
 foreach(PROTOCOL_XML IN LISTS PROTOCOL_XMLS)
@@ -42,6 +49,7 @@ qt_add_executable(omasnap
   pin-layout.hpp
   capture.cpp
   capture.hpp
+  kwin.hpp
   eyedropper.cpp
   eyedropper.hpp
   surface-capture.cpp
@@ -81,6 +89,8 @@ qt_add_executable(omasnap-smoke
   cli-path.hpp
   capture.cpp
   capture.hpp
+  kwin.hpp
+  kwin-smoke.hpp
   surface-capture-smoke.cpp
   surface-capture-smoke.hpp
   ${PROTOCOL_SOURCES}
@@ -114,6 +124,17 @@ target_link_libraries(omasnap-smoke PRIVATE
   PkgConfig::WaylandClient
 )
 
+if(OMASNAP_KDE)
+  # kwin.cpp declares a moc'd QObject for its DBus window-list sink.
+  foreach(KDE_TARGET omasnap omasnap-smoke)
+    target_sources(${KDE_TARGET} PRIVATE kwin.cpp)
+    target_compile_definitions(${KDE_TARGET} PRIVATE OMASNAP_KDE)
+    target_link_libraries(${KDE_TARGET} PRIVATE Qt6::DBus)
+    set_target_properties(${KDE_TARGET} PROPERTIES AUTOMOC ON)
+  endforeach()
+  target_sources(omasnap-smoke PRIVATE kwin-smoke.cpp)
+endif()
+
 install(TARGETS omasnap
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
@@ -121,6 +142,16 @@ install(FILES assets/OFL.txt
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/omasnap"
   RENAME Neucha-OFL.txt
 )
-install(FILES omasnap.desktop
-  DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
-)
+if(OMASNAP_KDE)
+  # KWin authorizes the ScreenShot2 DBus interface by resolving a desktop
+  # entry whose Exec matches the calling binary, so Exec must be absolute.
+  configure_file(omasnap-kde.desktop.in
+    "${CMAKE_CURRENT_BINARY_DIR}/omasnap.desktop" @ONLY)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/omasnap.desktop"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+  )
+else()
+  install(FILES omasnap.desktop
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+  )
+endif()

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+prefix="${OMASNAP_PREFIX:-$HOME/.local}"
+build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/omasnap/build"
+
+missing=()
+for tool in cmake ninja pkg-config wayland-scanner; do
+  command -v "$tool" >/dev/null || missing+=("$tool")
+done
+if ((${#missing[@]})); then
+  printf 'install-kde: missing build tools: %s\n' "${missing[*]}" >&2
+  printf 'On Arch: sudo pacman -S --needed base-devel cmake ninja pkgconf qt6-base layer-shell-qt wayland wayland-protocols wl-clipboard tesseract tesseract-data-eng\n' >&2
+  exit 1
+fi
+
+cmake -S "$repo_dir" -B "$build_dir" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$prefix" \
+  -DOMASNAP_KDE=ON
+cmake --build "$build_dir" --parallel
+cmake --install "$build_dir"
+
+# KWin authorizes ScreenShot2 by matching the desktop entry's absolute Exec
+# path against the calling binary; refresh the service cache so the freshly
+# installed entry is seen without waiting for kded.
+command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+
+for tool in wl-copy wl-paste tesseract; do
+  command -v "$tool" >/dev/null || printf 'install-kde: %s is not installed; install it before capturing\n' "$tool" >&2
+done
+
+"$prefix/bin/omasnap" --version
+printf 'Bind a global shortcut to %s/bin/omasnap in System Settings > Keyboard > Shortcuts.\n' "$prefix"

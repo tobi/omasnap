@@ -81,6 +81,9 @@ bool runTransformSmoke(QString &error) {
   }
 
   const QByteArray originalPath = qgetenv("PATH");
+  const QByteArray originalSignature = qgetenv("HYPRLAND_INSTANCE_SIGNATURE");
+  // Force the hyprctl code path even when the smoke test runs inside KDE.
+  qputenv("HYPRLAND_INSTANCE_SIGNATURE", "omasnap-smoke");
   qputenv("PATH", fakeCommands.path().toUtf8() + ':' + originalPath);
   qputenv("OMASNAP_TEST_PPM", ppmPath.toUtf8());
   for (const int transform : {1, 3, 5, 7}) {
@@ -91,12 +94,14 @@ bool runTransformSmoke(QString &error) {
         rotatedCapture.preview.size() != QSize(200, 300)) {
       if (error.isEmpty())
         error = QStringLiteral("Quarter-turn monitor geometry was not swapped");
+      qputenv("HYPRLAND_INSTANCE_SIGNATURE", originalSignature);
       qputenv("PATH", originalPath);
       qunsetenv("OMASNAP_TEST_PPM");
       qunsetenv("OMASNAP_TEST_TRANSFORM");
       return false;
     }
   }
+  qputenv("HYPRLAND_INSTANCE_SIGNATURE", originalSignature);
   qputenv("PATH", originalPath);
   qunsetenv("OMASNAP_TEST_PPM");
   qunsetenv("OMASNAP_TEST_TRANSFORM");

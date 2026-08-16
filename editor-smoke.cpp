@@ -3,6 +3,7 @@
 #include "capture.hpp"
 #include "cli-path.hpp"
 #include "editor.hpp"
+#include "kwin-smoke.hpp"
 #include "pin-layout-smoke.hpp"
 #include "pin-lifecycle-smoke.hpp"
 #include "transform-smoke.hpp"
@@ -710,6 +711,21 @@ int main(int argc, char **argv) {
   QApplication application(argc, argv);
   if (!loadCaptureFonts())
     return 17;
+  // Stub the notifiers so save checks cannot spam the host desktop.
+  QTemporaryDir notifierStubs;
+  if (notifierStubs.isValid()) {
+    const QByteArray stub = QByteArrayLiteral("#!/usr/bin/env bash\nexit 0\n");
+    for (const QString &name :
+         {QStringLiteral("omarchy-notification-send"),
+          QStringLiteral("notify-send")}) {
+      QFile file(QDir(notifierStubs.path()).filePath(name));
+      if (file.open(QIODevice::WriteOnly) && file.write(stub) == stub.size())
+        file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                            QFileDevice::ExeOwner);
+    }
+    qputenv("PATH",
+            notifierStubs.path().toUtf8() + ':' + qgetenv("PATH"));
+  }
   QString snapshotError;
   if (!runPositionalImageTargetCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
@@ -750,6 +766,10 @@ int main(int argc, char **argv) {
   if (!runContinuousAnnotationToolsSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 80;
+  }
+  if (!runKWinParseSmoke(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 81;
   }
   const QString outputRoot =
       argc > 1 ? QString::fromLocal8Bit(argv[1])

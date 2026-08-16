@@ -31,22 +31,36 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 
 ## Platform scope
 
-The supported target is **Wayland + Hyprland**, with Omarchy as the primary integration.
-The renderer, layer surface, clipboard, and clean-window capture use Wayland protocols;
-monitor/window discovery currently calls `hyprctl`. `grim` captures the monitor before
-the layer maps. Selection displays that captured frame, while the annotation editor uses
-a translucent layer scrim over the live desktop and draws only the selected capture.
-Another Wayland compositor could support the application after supplying equivalent
-monitor and window discovery; generic Wayland support is not claimed by 1.0.
+The supported targets are **Wayland + Hyprland** (with Omarchy as the primary
+integration) and **Wayland + KDE Plasma 6**. The renderer, layer surface, and clipboard
+use Wayland protocols on both. Selection displays the captured frame, while the
+annotation editor uses a translucent layer scrim over the live desktop and draws only
+the selected capture. Another Wayland compositor could support the application after
+supplying equivalent monitor and window discovery; generic Wayland support is not
+claimed.
+
+On Hyprland, monitor/window discovery calls `hyprctl`, `grim` captures the monitor
+before the layer maps, and clean window capture uses the `ext-image-copy-capture`
+Wayland protocol.
+
+On KDE Plasma (opt-in at build time with `-DOMASNAP_KDE=ON`, which `install-kde`
+passes), KWin does not expose those capture protocols to ordinary clients, so
+Omasnap uses the interfaces Plasma sanctions for screenshot tools instead: the
+`org.kde.KWin.ScreenShot2` DBus service for monitor and clean window pixels, and a
+transient KWin script for stacking-ordered window discovery. KWin authorizes
+`ScreenShot2` callers by matching the installed desktop entry's absolute `Exec` path
+against the calling binary, which is why the desktop entry declares
+`X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2` and why running an
+uninstalled binary is denied.
 
 Runtime commands used by the application:
 
-- `hyprctl`
-- `grim`
+- `hyprctl` and `grim` (Hyprland only)
 - `wl-copy` and `wl-paste`
 - `tesseract`
 - `omarchy-notification-send` when available; saved captures include a thumbnail and
-  reopen in Omasnap when clicked. Notification failure does not invalidate output.
+  reopen in Omasnap when clicked. Falls back to `notify-send` on other desktops.
+  Notification failure does not invalidate output.
 
 ## Install on Omarchy
 
@@ -96,6 +110,33 @@ extensions; they do not install native executables or system packages.
 
 Set `OMASNAP_PREFIX` before running `install-omarchy` to use a prefix other than
 `~/.local`.
+
+## Install on KDE Plasma
+
+Install the dependencies (Arch package names shown; `layer-shell-qt` ships with
+Plasma):
+
+```bash
+sudo pacman -S --needed \
+  base-devel cmake ninja pkgconf qt6-base layer-shell-qt \
+  wayland wayland-protocols wl-clipboard \
+  tesseract tesseract-data-eng
+```
+
+Then clone the repository and run the KDE installer:
+
+```bash
+git clone https://github.com/tobi/omasnap.git
+cd omasnap
+./install-kde
+```
+
+The installer builds with `-DOMASNAP_KDE=ON` in `~/.cache/omasnap`, installs under
+`~/.local` (override with `OMASNAP_PREFIX`), and refreshes the KDE service cache so
+KWin authorizes the screenshot interface. Builds without the option contain no KDE
+code and ship the plain desktop entry, so Omarchy installs are unaffected. Bind a global shortcut to `~/.local/bin/omasnap` in System
+Settings under Keyboard, Shortcuts. The binary must be launched from its installed
+path; KWin denies screenshot access to binaries without a matching desktop entry.
 
 ### Manual Arch Linux build
 

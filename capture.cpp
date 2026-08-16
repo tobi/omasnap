@@ -1,6 +1,8 @@
 /** @fileoverview Captures, renders, saves, and shares screenshots. */
 #include "capture.hpp"
 
+#include "kwin.hpp"
+
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -663,6 +665,9 @@ void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
 }
 
 bool captureFocusedMonitor(CaptureData &capture, QString &error) {
+  if (kwinSession())
+    return kwinCaptureFocusedMonitor(capture, error);
+
   const ProcessResult monitors =
       runProcess(QStringLiteral("hyprctl"),
                  {QStringLiteral("monitors"), QStringLiteral("-j")});
@@ -994,7 +999,42 @@ QString recognizeText(const QImage &image, QString &error) {
   return text;
 }
 
+namespace {
+/** Sends a plain notify-send notification on desktops without Omarchy. */
+void sendFreedesktopNotification(const QString &message,
+                                 const QString &imagePath) {
+  if (QStandardPaths::findExecutable(QStringLiteral("notify-send")).isEmpty())
+    return;
+  if (imagePath.isEmpty()) {
+    QProcess::startDetached(QStringLiteral("notify-send"),
+                            {QStringLiteral("-a"), QStringLiteral("omasnap"),
+                             QStringLiteral("-t"), QStringLiteral("4500"),
+                             message});
+    return;
+  }
+  QString omasnap = QDir(QCoreApplication::applicationDirPath())
+                        .filePath(QStringLiteral("omasnap"));
+  if (!QFileInfo::exists(omasnap))
+    omasnap = QStringLiteral("omasnap");
+  // notify-send -A blocks until the notification closes and prints the
+  // chosen action, so a detached shell waits for the click on our behalf.
+  const QString command =
+      QStringLiteral("action=$(notify-send -a omasnap -t 4500 -i %1 -A "
+                     "default=Edit %2 'Click to edit'); "
+                     "[ \"$action\" = default ] && exec %3 %1")
+          .arg(shellQuote(imagePath), shellQuote(message), shellQuote(omasnap));
+  QProcess::startDetached(QStringLiteral("bash"),
+                          {QStringLiteral("-c"), command});
+}
+} // namespace
+
 void sendCaptureNotification(const QString &message, const QString &imagePath) {
+  if (QStandardPaths::findExecutable(
+          QStringLiteral("omarchy-notification-send"))
+          .isEmpty()) {
+    sendFreedesktopNotification(message, imagePath);
+    return;
+  }
   QStringList arguments{QStringLiteral("-g"), QStringLiteral(""),
                         QStringLiteral("--app-name"), QStringLiteral("omasnap"),
                         message};

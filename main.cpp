@@ -99,7 +99,7 @@ int main(int argc, char **argv) {
   QCommandLineParser parser;
   parser.setApplicationDescription(
       QStringLiteral("Native Wayland screenshot and annotation overlay for "
-                     "Hyprland and Omarchy."));
+                     "Hyprland, KDE Plasma, and Omarchy."));
   parser.addHelpOption();
   parser.addVersionOption();
   const QCommandLineOption fullscreenOption(

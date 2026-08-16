@@ -1,7 +1,8 @@
 # Omasnap — Agent Guide
 
 Omasnap is a super fast, native Wayland screenshot and annotation overlay,
-built primarily for [Omarchy](https://omarchy.org) on Hyprland. It captures
+built primarily for [Omarchy](https://omarchy.org) on Hyprland, with KDE
+Plasma 6 as a second supported desktop. It captures
 region, window, or full monitor, then opens an annotation editor with vector
 layers (arrows, lines, freehand, highlighter, rectangles, numbered markers,
 text, OCR). Finished captures go to clipboard, `~/Pictures/Screenshots`, or a
@@ -12,7 +13,9 @@ pinned always-on-top layer surface.
 - **Speed first.** The tool must feel instant: capture, annotate, copy. No
   startup bloat, no settings UI, no wizards.
 - **Wayland only.** Requires Wayland + Hyprland (monitor/window discovery via
-  `hyprctl`). No X11, no macOS/Windows ports, no generic-compositor support.
+  `hyprctl`) or Wayland + KDE Plasma 6 (KWin `ScreenShot2` DBus and scripting,
+  see `kwin.cpp`). No X11, no macOS/Windows ports, no generic-compositor
+  support.
 - **No backwards compatibility.** Break keybindings, CLI flags, file formats,
   or internals whenever it keeps the code simpler or the tool faster. Do not
   add compatibility shims, deprecation aliases, or migration code.
@@ -29,12 +32,14 @@ pinned always-on-top layer surface.
 |---|---|
 | `main.cpp` | CLI parsing, single-instance lock, mode dispatch (capture / edit file / pin) |
 | `capture.cpp/.hpp` | Capture selection overlay, snapshot lifecycle under `/run/user/<UID>/omasnap/` |
+| `kwin.cpp/.hpp` | KDE Plasma backend: KWin `ScreenShot2` DBus capture and scripted window discovery; compiled only with `-DOMASNAP_KDE=ON` (`kwin.hpp` stubs it out otherwise) |
 | `editor.cpp/.hpp` | Annotation editor: tools, layers, undo/redo, rendering, export |
 | `pin.cpp/.hpp` | Pinned-capture layer-shell surfaces (bottom-right, all workspaces) |
 | `surface-capture.cpp` | Clean window capture via `ext-image-copy-capture` Wayland protocol |
 | `icons.cpp/.hpp` | Vector icon renderer for toolbar and pin controls |
 | `editor-smoke.cpp`, `transform-smoke.cpp` | Headless smoke tests (Qt Test, offscreen platform) |
 | `install-omarchy` | Omarchy installer (deps via `omarchy-pkg-add`, installs to `~/.local`) |
+| `install-kde` | KDE Plasma installer (installs to `~/.local`, refreshes the KDE service cache) |
 | `CMakeLists.txt` | Build definition; **the version lives here** (`project(omasnap VERSION ...)`) |
 
 ## Build and verify
