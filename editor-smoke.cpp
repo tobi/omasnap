@@ -556,6 +556,154 @@ bool runSpotlightAndSampleChecks(QString &error) {
   }
   return true;
 }
+
+bool runContinuousAnnotationToolsSmoke(QApplication &application,
+                                       QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  capture.preview = capture.source;
+
+  CaptureEditor editor(capture);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+  QTest::mouseMove(&editor, QPoint(700, 500), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(700, 500));
+  application.processEvents();
+
+  QTest::keyClick(&editor, Qt::Key_A);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::CrossCursor) {
+    error = QStringLiteral("Arrow tool did not set cross cursor");
+    return false;
+  }
+
+  for (const auto &[startX, startY, endX, endY] : {
+           std::tuple{150, 150, 250, 200},
+           std::tuple{300, 150, 400, 200},
+           std::tuple{450, 150, 550, 200},
+       }) {
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(startX, startY));
+    QTest::mouseMove(&editor, QPoint(endX, endY), 10);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(endX, endY));
+    application.processEvents();
+    if (editor.cursor().shape() != Qt::CrossCursor) {
+      error = QStringLiteral("Arrow tool did not remain active after drawing");
+      return false;
+    }
+  }
+
+  QTest::mouseClick(&editor, Qt::RightButton, Qt::NoModifier, QPoint(100, 100));
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::ArrowCursor) {
+    error = QStringLiteral("Right-click did not return to Select tool");
+    return false;
+  }
+
+  QTest::keyClick(&editor, Qt::Key_M);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::PointingHandCursor) {
+    error = QStringLiteral("Marker tool did not set pointing hand cursor");
+    return false;
+  }
+
+  for (const auto &[x, y] :
+       {std::pair{200, 300}, std::pair{250, 300}, std::pair{300, 300}}) {
+    QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(x, y));
+    application.processEvents();
+    if (editor.cursor().shape() != Qt::PointingHandCursor) {
+      error = QStringLiteral("Marker tool did not remain active after click");
+      return false;
+    }
+  }
+
+  QTest::keyClick(&editor, Qt::Key_Escape);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::ArrowCursor) {
+    error = QStringLiteral("Escape did not return to Select tool");
+    return false;
+  }
+
+  QTest::keyClick(&editor, Qt::Key_R);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::CrossCursor) {
+    error = QStringLiteral("Rectangle tool did not set cross cursor");
+    return false;
+  }
+
+  for (const auto &[startX, startY, endX, endY] : {
+           std::tuple{150, 350, 250, 420},
+           std::tuple{300, 350, 400, 420},
+       }) {
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(startX, startY));
+    QTest::mouseMove(&editor, QPoint(endX, endY), 10);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(endX, endY));
+    application.processEvents();
+    if (editor.cursor().shape() != Qt::CrossCursor) {
+      error =
+          QStringLiteral("Rectangle tool did not remain active after drawing");
+      return false;
+    }
+  }
+
+  QTest::keyClick(&editor, Qt::Key_V);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::ArrowCursor) {
+    error = QStringLiteral("V key did not return to Select tool");
+    return false;
+  }
+
+  QTest::keyClick(&editor, Qt::Key_T);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::IBeamCursor) {
+    error = QStringLiteral("Text tool did not set IBeam cursor");
+    return false;
+  }
+
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(200, 450));
+  application.processEvents();
+  QTest::keyClicks(QApplication::focusWidget(), QStringLiteral("Text 1"));
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::IBeamCursor) {
+    error = QStringLiteral(
+        "Text tool did not remain active after submitting new text");
+    return false;
+  }
+
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(350, 450));
+  application.processEvents();
+  QTest::keyClicks(QApplication::focusWidget(), QStringLiteral("Text 2"));
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::IBeamCursor) {
+    error = QStringLiteral(
+        "Text tool did not remain active after second text commit");
+    return false;
+  }
+
+  QTest::mouseClick(&editor, Qt::RightButton, Qt::NoModifier, QPoint(100, 100));
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::ArrowCursor) {
+    error = QStringLiteral(
+        "Right-click did not return from Text tool to Select tool");
+    return false;
+  }
+
+  editor.close();
+  return true;
+}
 } // namespace
 /** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
@@ -598,6 +746,10 @@ int main(int argc, char **argv) {
   if (!runSpotlightAndSampleChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 79;
+  }
+  if (!runContinuousAnnotationToolsSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 80;
   }
   const QString outputRoot =
       argc > 1 ? QString::fromLocal8Bit(argv[1])
@@ -800,11 +952,15 @@ int main(int argc, char **argv) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(570, 350));
   application.processEvents();
-  if (editor.cursor().shape() != Qt::ArrowCursor)
+  if (editor.cursor().shape() != Qt::CrossCursor)
     return 26;
   const QImage arrowSnapshot(snapshotPath);
   if (arrowSnapshot.isNull() || arrowSnapshot == initialSnapshot)
     return 38;
+  QTest::mouseClick(&editor, Qt::RightButton, Qt::NoModifier, QPoint(100, 100));
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::ArrowCursor)
+    return 26;
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(400, 300));
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(400, 300));
   QTest::mouseMove(&editor, QPoint(420, 315), 20);
@@ -830,7 +986,7 @@ int main(int argc, char **argv) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(520, 265));
   application.processEvents();
-  if (editor.cursor().shape() != Qt::ArrowCursor)
+  if (editor.cursor().shape() != Qt::CrossCursor)
     return 27;
   const QImage lineSnapshot(snapshotPath);
   if (lineSnapshot.isNull() || lineSnapshot == arrowSnapshot)
@@ -844,6 +1000,8 @@ int main(int argc, char **argv) {
   if (QImage(snapshotPath) != lineSnapshot)
     return 42;
 
+  QTest::keyClick(&editor, Qt::Key_V);
+  application.processEvents();
   const QImage lineUnselectedUi = editor.grab().toImage();
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(390, 238));
   application.processEvents();
@@ -889,7 +1047,7 @@ int main(int argc, char **argv) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(530, 420));
   application.processEvents();
-  if (editor.cursor().shape() != Qt::ArrowCursor ||
+  if (editor.cursor().shape() != Qt::CrossCursor ||
       QImage(snapshotPath) == beforeFreehandSnapshot)
     return 28;
   const QImage beforeMarkerSnapshot(snapshotPath);
@@ -897,7 +1055,8 @@ int main(int argc, char **argv) {
   QTest::keyClick(&editor, Qt::Key_C);
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(470, 300));
   application.processEvents();
-  if (QImage(snapshotPath) == beforeMarkerSnapshot)
+  if (editor.cursor().shape() != Qt::PointingHandCursor ||
+      QImage(snapshotPath) == beforeMarkerSnapshot)
     return 48;
   const QImage beforeTextSnapshot(snapshotPath);
   QTest::keyClick(&editor, Qt::Key_T);
@@ -1024,6 +1183,7 @@ int main(int argc, char **argv) {
     if (pixelatedRedaction.isNull() || pixelatedRedaction == beforeRedaction)
       return 73;
 
+    QTest::keyClick(&redactionEditor, Qt::Key_V);
     QTest::mouseClick(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(360, 230));
     QTest::keyClick(&redactionEditor, Qt::Key_D);
@@ -1054,6 +1214,7 @@ int main(int argc, char **argv) {
     if (QImage(snapshotPath) != solidRedaction)
       return 78;
 
+    QTest::keyClick(&redactionEditor, Qt::Key_D);
     QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(300, 200));
     QTest::mouseMove(&redactionEditor, QPoint(280, 190), 20);
@@ -1096,6 +1257,7 @@ int main(int argc, char **argv) {
     QTest::mouseMove(&overlapEditor, QPoint(450, 330), 20);
     QTest::mouseRelease(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(450, 330));
+    QTest::keyClick(&overlapEditor, Qt::Key_V);
     QTest::mouseClick(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(400, 300));
     application.processEvents();
@@ -1112,6 +1274,7 @@ int main(int argc, char **argv) {
     QTest::mouseMove(&overlapEditor, QPoint(470, 350), 20);
     QTest::mouseRelease(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(470, 350));
+    QTest::keyClick(&overlapEditor, Qt::Key_V);
     QTest::mouseClick(&overlapEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(400, 285));
     application.processEvents();
@@ -1245,6 +1408,7 @@ int main(int argc, char **argv) {
   QTest::mouseMove(&cropEditor, QPoint(520, 265), 20);
   QTest::mouseRelease(&cropEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(520, 265));
+  QTest::keyClick(&cropEditor, Qt::Key_V);
   QTest::mouseClick(&cropEditor, Qt::LeftButton, Qt::NoModifier,
                     QPoint(390, 238));
   application.processEvents();

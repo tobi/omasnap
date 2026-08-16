@@ -1034,14 +1034,16 @@ void CaptureEditor::acceptText() {
     if (editingAnnotation_ >= 0 && editingAnnotation_ < annotations_.size()) {
       annotations_[editingAnnotation_] = std::move(annotation);
       selectedAnnotation_ = editingAnnotation_;
+      tool_ = Tool::Select;
       setStatus(QStringLiteral("Text updated · drag to move · handle resizes"));
     } else {
       annotations_.push_back(std::move(annotation));
       selectedAnnotation_ = -1;
-      setStatus(QStringLiteral("Text added · Select tool chooses layers"));
+      setStatus(QStringLiteral("Text added · Esc for select mode"));
     }
-    tool_ = Tool::Select;
     persistSnapshot();
+  } else if (editingAnnotation_ >= 0) {
+    tool_ = Tool::Select;
   }
   editingAnnotation_ = -1;
   textEditor_->clear();
@@ -1581,7 +1583,31 @@ void CaptureEditor::mouseDoubleClickEvent(QMouseEvent *event) {
 }
 
 void CaptureEditor::mousePressEvent(QMouseEvent *event) {
-  if (event->button() != Qt::LeftButton || busy_)
+  if (busy_)
+    return;
+  if (event->button() == Qt::RightButton) {
+    if (phase_ == Phase::Select) {
+      if (dragging_) {
+        dragging_ = false;
+        selection_ = {};
+        update();
+      }
+    } else if (phase_ == Phase::Edit) {
+      if (textEditor_->isVisible())
+        acceptText();
+      if (dragging_) {
+        handleEscape();
+      } else if (tool_ != Tool::Select || selectedAnnotation_ >= 0) {
+        tool_ = Tool::Select;
+        selectedAnnotation_ = -1;
+        setStatus(QStringLiteral("Select/move · Esc again to close"));
+        updatePointerCursor();
+        update();
+      }
+    }
+    return;
+  }
+  if (event->button() != Qt::LeftButton)
     return;
   cursor_ = event->position();
   if (phase_ == Phase::Select) {
@@ -1724,8 +1750,8 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     annotation.size = annotationSize_;
     annotations_.push_back(std::move(annotation));
     selectedAnnotation_ = -1;
-    tool_ = Tool::Select;
-    setStatus(QStringLiteral("Marker added · Select tool chooses layers"));
+    setStatus(QStringLiteral("Marker %1 added · Esc for select mode")
+                  .arg(annotation.number));
     persistSnapshot();
     updatePointerCursor();
   } else if (tool_ == Tool::Text) {
@@ -1807,11 +1833,10 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
       annotation.points = std::move(freehandPoints_);
       annotations_.push_back(std::move(annotation));
       selectedAnnotation_ = -1;
-      tool_ = Tool::Select;
       setStatus(
           highlighter
-              ? QStringLiteral("Highlight added · Select tool chooses layers")
-              : QStringLiteral("Stroke added · Select tool chooses layers"));
+              ? QStringLiteral("Highlight added · Esc for select mode")
+              : QStringLiteral("Stroke added · Esc for select mode"));
       persistSnapshot();
     }
     freehandPoints_.clear();
@@ -1860,12 +1885,10 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
     annotations_.push_back(std::move(annotation));
     selectedAnnotation_ = -1;
     const bool redacted = tool_ == Tool::Redact;
-    tool_ = Tool::Select;
     setStatus(redacted
-                  ? QStringLiteral("%1 redaction added · select to move or "
-                                   "resize · D toggles style")
+                  ? QStringLiteral("%1 redaction added · Esc for select mode")
                         .arg(redactionStyleName(redactionStyle_))
-                  : QStringLiteral("Layer added · Select tool chooses layers"));
+                  : QStringLiteral("Layer added · Esc for select mode"));
     persistSnapshot();
     updatePointerCursor();
   } else if (tool_ == Tool::Redact) {

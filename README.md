@@ -234,6 +234,7 @@ Install the corresponding Tesseract language data before adding a language to
 | `Enter` | Copy and save |
 | `P` | Pin the capture on screen and close the editor |
 | `Esc` | Return to Select; press again to close |
+| Right-click | Return to Select; cancel active drawing |
 
 ### Pinned captures
 
