@@ -526,11 +526,11 @@ void applyRedactions(QImage &image, const QVector<Annotation> &annotations,
 
 QRect pixelSelection(const CaptureData &capture, const QRectF &selection) {
   const QRectF bounded = selection.normalized().intersected(
-      QRectF(QPointF(), capture.preview.size()));
+      QRectF(QPointF(), capture.previewSize));
   const qreal scaleX =
-      capture.source.width() / static_cast<qreal>(capture.preview.width());
-  const qreal scaleY =
-      capture.source.height() / static_cast<qreal>(capture.preview.height());
+      capture.source.width() / static_cast<qreal>(capture.previewSize.width());
+  const qreal scaleY = capture.source.height() /
+                       static_cast<qreal>(capture.previewSize.height());
   const int left =
       std::clamp(static_cast<int>(std::floor(bounded.left() * scaleX)), 0,
                  capture.source.width());
@@ -770,12 +770,7 @@ bool captureFocusedMonitor(CaptureData &capture, bool includeWindows,
     return false;
   }
 
-  capture.preview = capture.source.scaled(
-      geometry.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-  if (capture.preview.isNull()) {
-    error = QStringLiteral("Could not prepare screenshot preview");
-    return false;
-  }
+  capture.previewSize = geometry.size();
 
   if (includeWindows) {
     if (!clients.waitForFinished(10000))
@@ -797,9 +792,9 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
   QImage cropped = capture.source.copy(pixels).convertToFormat(
       QImage::Format_ARGB32_Premultiplied);
   const qreal sourceScaleX =
-      capture.source.width() / static_cast<qreal>(capture.preview.width());
-  const qreal sourceScaleY =
-      capture.source.height() / static_cast<qreal>(capture.preview.height());
+      capture.source.width() / static_cast<qreal>(capture.previewSize.width());
+  const qreal sourceScaleY = capture.source.height() /
+                             static_cast<qreal>(capture.previewSize.height());
   const bool highDpi = capture.monitor.scale > 1.0;
   const qreal scaleX = highDpi ? capture.monitor.scale : sourceScaleX;
   const qreal scaleY = highDpi ? capture.monitor.scale : sourceScaleY;

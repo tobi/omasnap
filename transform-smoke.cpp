@@ -101,7 +101,7 @@ bool runTransformSmoke(QString &error) {
     CaptureData rotatedCapture;
     if (!captureFocusedMonitor(rotatedCapture, true, error) ||
         rotatedCapture.monitor.geometry.size() != QSize(200, 300) ||
-        rotatedCapture.preview.size() != QSize(200, 300) ||
+        rotatedCapture.previewSize != QSize(200, 300) ||
         rotatedCapture.windows.size() != 1) {
       if (error.isEmpty())
         error = QStringLiteral("Quarter-turn monitor geometry was not swapped");
@@ -115,7 +115,7 @@ bool runTransformSmoke(QString &error) {
   CaptureData withoutWindows;
   if (!captureFocusedMonitor(withoutWindows, false, error) ||
       withoutWindows.source.size() != QSize(300, 200) ||
-      withoutWindows.preview.size() != QSize(300, 200) ||
+      withoutWindows.previewSize != QSize(300, 200) ||
       !withoutWindows.windows.isEmpty()) {
     if (error.isEmpty())
       error = QStringLiteral("Capture without window discovery was incorrect");
