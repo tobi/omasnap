@@ -32,9 +32,11 @@ public:
   /**
    * Kicks off the monitor pixel capture in the background. The overlay stays
    * interactive (showing a "Capturing…" state) until it lands, then emits
-   * captureReady. Safe to call once, before entering the event loop.
+   * captureReady. Safe to call once, before entering the event loop. Window
+   * discovery runs alongside the grab and is skipped when `includeWindows` is
+   * false, for callers that never show the overlay.
    */
-  void startCapture(CaptureMode mode);
+  void startCapture(CaptureMode mode, bool includeWindows);
   /**
    * Blocks until the in-flight snapshot persistence has drained, letting the
    * event loop run meanwhile. Returns whether the last write succeeded.

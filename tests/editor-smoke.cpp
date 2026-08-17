@@ -747,10 +747,11 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
                         "else\n"
                         "  printf '[]\\n'\n"
                         "fi\n");
+  // grim streams the capture on stdout.
   const QByteArray grimScript =
       QByteArrayLiteral("#!/usr/bin/env bash\n"
                         "set -euo pipefail\n"
-                        "cp -- \"$OMASNAP_TEST_PPM\" \"${@: -1}\"\n");
+                        "cat -- \"$OMASNAP_TEST_PPM\"\n");
   if (!writeExecutable(fakeHyprctl, hyprctlScript) ||
       !writeExecutable(fakeGrim, grimScript)) {
     error = QStringLiteral("Could not create async capture commands");
@@ -787,7 +788,7 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
                      ready = ok;
                      captureError = message;
                    });
-  editor.startCapture(CaptureEditor::CaptureMode::Region);
+  editor.startCapture(CaptureEditor::CaptureMode::Region, true);
 
   QElapsedTimer timer;
   timer.start();

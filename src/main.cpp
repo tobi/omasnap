@@ -331,8 +331,11 @@ int main(int argc, char **argv) {
     editor.setFocus(Qt::ActiveWindowFocusReason);
   }
 
-  if (filePath.isEmpty())
-    editor.startCapture(captureMode);
+  if (filePath.isEmpty()) {
+    // The quick fullscreen path never shows the overlay, so it never needs the
+    // window list that only window-mode hover consumes.
+    editor.startCapture(captureMode, !instantFullscreenOutput);
+  }
 
   return application.exec();
 }

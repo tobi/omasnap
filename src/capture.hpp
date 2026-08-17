@@ -79,13 +79,17 @@ struct Annotation {
  */
 [[nodiscard]] bool probeFocusedMonitor(MonitorInfo &monitor, QString &error);
 /**
- * Captures the focused monitor's pixels and window list onto the given
- * monitor. Pure I/O and image work (no GUI objects): safe on any thread.
+ * Captures the focused monitor's pixels onto the given monitor, and its window
+ * list when `includeWindows` is set. Window discovery runs alongside the screen
+ * grab, so callers that never show the overlay should skip it. Pure I/O and
+ * image work (no GUI objects): safe on any thread.
  */
 [[nodiscard]] bool captureMonitorPixels(const MonitorInfo &monitor,
-                                        CaptureData &capture, QString &error);
+                                        CaptureData &capture,
+                                        bool includeWindows, QString &error);
 /** Convenience: probes the focused monitor, then captures its pixels. */
-[[nodiscard]] bool captureFocusedMonitor(CaptureData &capture, QString &error);
+[[nodiscard]] bool captureFocusedMonitor(CaptureData &capture,
+                                         bool includeWindows, QString &error);
 [[nodiscard]] bool captureWindowSurface(const WindowTarget &window,
                                         QImage &image, QString &error);
 /** Returns an upright image for captured Wayland buffer contents. */

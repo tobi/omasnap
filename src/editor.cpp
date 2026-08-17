@@ -1047,17 +1047,18 @@ void CaptureEditor::pinSnapshot() {
       }));
 }
 
-void CaptureEditor::startCapture(CaptureMode mode) {
+void CaptureEditor::startCapture(CaptureMode mode, bool includeWindows) {
   if (captureStarted_ || !capture_.source.isNull())
     return;
   captureStarted_ = true;
   capturePending_ = true;
   pendingMode_ = mode;
   const MonitorInfo monitor = capture_.monitor;
-  captureWatcher_.setFuture(QtConcurrent::run([monitor] {
+  captureWatcher_.setFuture(QtConcurrent::run([monitor, includeWindows] {
     CaptureJob job;
     job.capture.monitor = monitor;
-    job.ok = captureMonitorPixels(monitor, job.capture, job.error);
+    job.ok =
+        captureMonitorPixels(monitor, job.capture, includeWindows, job.error);
     return job;
   }));
 }

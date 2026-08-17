@@ -60,12 +60,19 @@ bool runTransformSmoke(QString &error) {
       "\"x\":0,\"y\":0,\"activeWorkspace\":{\"id\":7}}]\\n' "
       "\"$OMASNAP_TEST_TRANSFORM\"\n"
       "else\n"
-      "  printf '[]\\n'\n"
+      "  printf '[{\"workspace\":{\"id\":7},\"at\":[0,0],\"size\":[100,100],"
+      "\"title\":\"Test window\",\"stableId\":\"w1\"}]\\n'\n"
       "fi\n");
-  const QByteArray grimScript =
-      QByteArrayLiteral("#!/usr/bin/env bash\n"
-                        "set -euo pipefail\n"
-                        "cp -- \"$OMASNAP_TEST_PPM\" \"${@: -1}\"\n");
+  // grim streams the capture on stdout; the garbage mode exits cleanly with
+  // undecodable bytes so the decode failure path can be checked.
+  const QByteArray grimScript = QByteArrayLiteral(
+      "#!/usr/bin/env bash\n"
+      "set -euo pipefail\n"
+      "if [[ -n \"${OMASNAP_TEST_GRIM_GARBAGE:-}\" ]]; then\n"
+      "  printf 'not-a-ppm'\n"
+      "  exit 0\n"
+      "fi\n"
+      "cat -- \"$OMASNAP_TEST_PPM\"\n");
   if (!writeExecutable(fakeHyprctl, hyprctlScript) ||
       !writeExecutable(fakeGrim, grimScript)) {
     error = QStringLiteral("Could not create transform-test commands");
@@ -83,23 +90,53 @@ bool runTransformSmoke(QString &error) {
   const QByteArray originalPath = qgetenv("PATH");
   qputenv("PATH", fakeCommands.path().toUtf8() + ':' + originalPath);
   qputenv("OMASNAP_TEST_PPM", ppmPath.toUtf8());
+  const auto restoreEnvironment = [&originalPath] {
+    qputenv("PATH", originalPath);
+    qunsetenv("OMASNAP_TEST_PPM");
+    qunsetenv("OMASNAP_TEST_TRANSFORM");
+    qunsetenv("OMASNAP_TEST_GRIM_GARBAGE");
+  };
   for (const int transform : {1, 3, 5, 7}) {
     qputenv("OMASNAP_TEST_TRANSFORM", QByteArray::number(transform));
     CaptureData rotatedCapture;
-    if (!captureFocusedMonitor(rotatedCapture, error) ||
+    if (!captureFocusedMonitor(rotatedCapture, true, error) ||
         rotatedCapture.monitor.geometry.size() != QSize(200, 300) ||
-        rotatedCapture.preview.size() != QSize(200, 300)) {
+        rotatedCapture.preview.size() != QSize(200, 300) ||
+        rotatedCapture.windows.size() != 1) {
       if (error.isEmpty())
         error = QStringLiteral("Quarter-turn monitor geometry was not swapped");
-      qputenv("PATH", originalPath);
-      qunsetenv("OMASNAP_TEST_PPM");
-      qunsetenv("OMASNAP_TEST_TRANSFORM");
+      restoreEnvironment();
       return false;
     }
   }
-  qputenv("PATH", originalPath);
-  qunsetenv("OMASNAP_TEST_PPM");
-  qunsetenv("OMASNAP_TEST_TRANSFORM");
+
+  // Callers that never show the overlay skip window discovery entirely.
+  qputenv("OMASNAP_TEST_TRANSFORM", QByteArrayLiteral("0"));
+  CaptureData withoutWindows;
+  if (!captureFocusedMonitor(withoutWindows, false, error) ||
+      withoutWindows.source.size() != QSize(300, 200) ||
+      withoutWindows.preview.size() != QSize(300, 200) ||
+      !withoutWindows.windows.isEmpty()) {
+    if (error.isEmpty())
+      error = QStringLiteral("Capture without window discovery was incorrect");
+    restoreEnvironment();
+    return false;
+  }
+
+  // A grim that exits cleanly but streams undecodable bytes must still explain
+  // itself instead of reporting an empty error.
+  qputenv("OMASNAP_TEST_GRIM_GARBAGE", QByteArrayLiteral("1"));
+  CaptureData undecodable;
+  QString decodeError;
+  const bool decoded = captureFocusedMonitor(undecodable, false, decodeError);
+  qunsetenv("OMASNAP_TEST_GRIM_GARBAGE");
+  if (decoded || decodeError.isEmpty()) {
+    error = QStringLiteral("Undecodable capture data did not report an error");
+    restoreEnvironment();
+    return false;
+  }
+
+  restoreEnvironment();
 
   const QImage upright = indexedImage({{1, 2}, {3, 4}, {5, 6}});
   const QVector<QPair<std::uint32_t, QImage>> transformedImages{

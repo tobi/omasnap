@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -18,7 +19,6 @@
 #include <QRandomGenerator>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QTemporaryFile>
 
 #include <QUrl>
 #include <algorithm>
@@ -110,6 +110,51 @@ ProcessResult runProcess(const QString &program, const QStringList &arguments,
   if (!finished)
     process.kill();
   return {process.readAllStandardOutput(), process.readAllStandardError(),
+          finished ? process.exitCode() : -1, finished};
+}
+
+/**
+ * Runs a process whose stdout carries a large payload, draining the pipe as it
+ * arrives into one buffer sized up front. Letting QProcess buffer the whole
+ * payload first costs an extra copy of the full frame.
+ */
+ProcessResult runStreamingProcess(const QString &program,
+                                  const QStringList &arguments,
+                                  qsizetype expectedBytes, int timeoutMs) {
+  QProcess process;
+  process.setProcessChannelMode(QProcess::SeparateChannels);
+  process.start(program, arguments, QIODevice::ReadOnly);
+  if (!process.waitForStarted(2000))
+    return {{}, process.errorString().toUtf8(), -1, false};
+
+  QByteArray output;
+  output.reserve(std::max<qsizetype>(expectedBytes, 0));
+  const auto drain = [&process, &output] {
+    const qint64 available = process.bytesAvailable();
+    if (available <= 0)
+      return;
+    const qsizetype offset = output.size();
+    output.resize(offset + available);
+    const qint64 read = process.read(output.data() + offset, available);
+    output.resize(offset + std::max<qint64>(read, 0));
+  };
+
+  QElapsedTimer clock;
+  clock.start();
+  const auto remainingMs = [&clock, timeoutMs] {
+    return std::max<qint64>(0, timeoutMs - clock.elapsed());
+  };
+  while (remainingMs() > 0 &&
+         process.waitForReadyRead(static_cast<int>(remainingMs())))
+    drain();
+
+  const bool finished =
+      process.state() == QProcess::NotRunning ||
+      process.waitForFinished(static_cast<int>(remainingMs()));
+  if (!finished)
+    process.kill();
+  drain();
+  return {std::move(output), process.readAllStandardError(),
           finished ? process.exitCode() : -1, finished};
 }
 
@@ -675,40 +720,56 @@ bool probeFocusedMonitor(MonitorInfo &monitor, QString &error) {
 }
 
 bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
-                          QString &error) {
+                          bool includeWindows, QString &error) {
   capture.monitor = monitor;
-  const QString sourceTemplate =
-      runtimePath(QStringLiteral("omasnap-capture-XXXXXX.ppm"));
-  if (sourceTemplate.isEmpty()) {
-    error = QStringLiteral("Could not create private runtime directory");
-    return false;
-  }
-  QTemporaryFile sourceFile(sourceTemplate);
-  sourceFile.setAutoRemove(true);
-  if (!sourceFile.open()) {
-    error = sourceFile.errorString();
-    return false;
-  }
-  const QString sourcePath = sourceFile.fileName();
-  sourceFile.close();
-
   const QRect geometry = capture.monitor.geometry;
+  if (geometry.size().isEmpty()) {
+    error = QStringLiteral("Focused monitor reported an empty geometry");
+    return false;
+  }
+
+  // Window discovery is independent of the screen grab, so let the hyprctl
+  // round trip overlap grim instead of running after it.
+  QProcess clients;
+  if (includeWindows) {
+    clients.setProcessChannelMode(QProcess::SeparateChannels);
+    clients.start(QStringLiteral("hyprctl"),
+                  {QStringLiteral("clients"), QStringLiteral("-j")});
+    clients.closeWriteChannel();
+  }
+
   const QString grimGeometry = QStringLiteral("%1,%2 %3x%4")
                                    .arg(geometry.x())
                                    .arg(geometry.y())
                                    .arg(geometry.width())
                                    .arg(geometry.height());
-  const ProcessResult grim = runProcess(
+  // A PPM frame is three bytes per pixel plus a short header.
+  const qsizetype expectedBytes =
+      static_cast<qsizetype>(capture.monitor.pixelSize.width()) *
+          capture.monitor.pixelSize.height() * 3 +
+      64;
+  const ProcessResult grim = runStreamingProcess(
       QStringLiteral("grim"),
       {QStringLiteral("-t"), QStringLiteral("ppm"), QStringLiteral("-s"),
        QString::number(capture.monitor.scale, 'g', 8), QStringLiteral("-g"),
-       grimGeometry, sourcePath},
-      {}, 10000);
+       grimGeometry, QStringLiteral("-")},
+      expectedBytes, 10000);
 
-  if (!grim.finished || grim.exitCode != 0 ||
-      !capture.source.load(sourcePath)) {
-    error = QStringLiteral("Screen capture failed: %1")
-                .arg(QString::fromUtf8(grim.error).trimmed());
+  if (!grim.finished || grim.exitCode != 0) {
+    QString detail = QString::fromUtf8(grim.error).trimmed();
+    if (detail.isEmpty()) {
+      detail = grim.finished ? QStringLiteral("grim exited with code %1")
+                                   .arg(grim.exitCode)
+                             : QStringLiteral("grim did not finish in time");
+    }
+    error = QStringLiteral("Screen capture failed: %1").arg(detail);
+    return false;
+  }
+  if (!capture.source.loadFromData(grim.output, "PPM")) {
+    error = QStringLiteral(
+                "Screen capture failed: could not decode %1 bytes of PPM data "
+                "from grim")
+                .arg(grim.output.size());
     return false;
   }
 
@@ -719,18 +780,21 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
     return false;
   }
 
-  const ProcessResult clients =
-      runProcess(QStringLiteral("hyprctl"),
-                 {QStringLiteral("clients"), QStringLiteral("-j")});
-  if (clients.finished && clients.exitCode == 0)
-    capture.windows = parseWindows(clients.output, capture.monitor);
+  if (includeWindows) {
+    if (!clients.waitForFinished(10000))
+      clients.kill();
+    else if (clients.exitCode() == 0)
+      capture.windows =
+          parseWindows(clients.readAllStandardOutput(), capture.monitor);
+  }
   return true;
 }
 
-bool captureFocusedMonitor(CaptureData &capture, QString &error) {
+bool captureFocusedMonitor(CaptureData &capture, bool includeWindows,
+                           QString &error) {
   if (!probeFocusedMonitor(capture.monitor, error))
     return false;
-  return captureMonitorPixels(capture.monitor, capture, error);
+  return captureMonitorPixels(capture.monitor, capture, includeWindows, error);
 }
 
 QImage renderCapture(const CaptureData &capture, const QRectF &selection,
