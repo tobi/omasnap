@@ -72,7 +72,9 @@ struct Annotation {
 
 [[nodiscard]] bool loadCaptureFonts();
 [[nodiscard]] QFont annotationTextFont(qreal size);
-[[nodiscard]] bool captureFocusedMonitor(CaptureData &capture, QString &error);
+/** Captures the focused monitor; window discovery runs only when requested. */
+[[nodiscard]] bool captureFocusedMonitor(CaptureData &capture,
+                                         bool includeWindows, QString &error);
 [[nodiscard]] bool captureWindowSurface(const WindowTarget &window,
                                         QImage &image, QString &error);
 /** Returns an upright image for captured Wayland buffer contents. */

@@ -246,10 +246,18 @@ int main(int argc, char **argv) {
                              .arg(localFile)
                              .arg(image.width())
                              .arg(image.height());
-  } else if (!captureFocusedMonitor(capture, error)) {
-    qCritical().noquote() << error;
-    sendCaptureNotification(QStringLiteral("Screenshot failed: %1").arg(error));
-    return 1;
+  } else {
+    // The quick fullscreen path never shows the overlay, so it never needs
+    // the window list that only window-mode hover consumes.
+    const bool quickFullscreen =
+        captureMode == CaptureEditor::CaptureMode::Fullscreen &&
+        quickOutputMode != QuickOutputMode::None;
+    if (!captureFocusedMonitor(capture, !quickFullscreen, error)) {
+      qCritical().noquote() << error;
+      sendCaptureNotification(
+          QStringLiteral("Screenshot failed: %1").arg(error));
+      return 1;
+    }
   }
 
   if (filePath.isEmpty())
