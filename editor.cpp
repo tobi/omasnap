@@ -2108,8 +2108,16 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     preview.size = annotationSize_;
     liveAnnotations.push_back(std::move(preview));
   }
-  paintSpotlights(painter, capture_.source, QRectF(QPointF(), selection_.size()),
-                  sourceRect(selection_), liveAnnotations);
+  // Spotlights magnify what they sample, so a lens over a redaction must read
+  // the already redacted preview instead of the untouched source pixels.
+  const bool sampleRedacted =
+      !redactions.isEmpty() && !redactionPreviewCache_.isNull();
+  paintSpotlights(painter,
+                  sampleRedacted ? redactionPreviewCache_ : capture_.source,
+                  QRectF(QPointF(), selection_.size()),
+                  sampleRedacted ? QRectF(redactionPreviewCache_.rect())
+                                 : sourceRect(selection_),
+                  liveAnnotations);
   for (int index = 0; index < annotations_.size(); ++index) {
     if (index != editingAnnotation_ &&
         annotations_.at(index).kind != Annotation::Kind::Redaction)
