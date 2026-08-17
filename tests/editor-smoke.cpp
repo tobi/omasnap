@@ -565,6 +565,74 @@ bool runSpotlightAndSampleChecks(QString &error) {
   return true;
 }
 
+/** Checks that the live redaction preview follows selections off the origin. */
+bool runOffsetRedactionPreviewCheck(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  {
+    QPainter painter(&capture.source);
+    painter.fillRect(QRect(450, 350, 80, 60), QColor(QStringLiteral("#ff0000")));
+  }
+  capture.preview = capture.source;
+
+  CaptureEditor editor(capture);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+
+  // A region drag away from the origin selects 200,150 400x300, which the
+  // editor draws at 200,155 with an edit scale of 1. The secret patch is then
+  // at 450,355 to 530,415 in widget coordinates, centered on 490,385. A
+  // preview that anchors redactions to the capture origin instead of the
+  // selection lands the block 200,150 further up and left, around 290,235.
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(200, 150));
+  QTest::mouseMove(&editor, QPoint(600, 450), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(600, 450));
+  application.processEvents();
+
+  const QPoint secretCenter(490, 385);
+  const QPoint displacedCenter(290, 235);
+  const auto showsSecret = [](const QColor &color) {
+    return color.red() > 180 && color.green() < 70 && color.blue() < 70;
+  };
+  if (!showsSecret(editor.grab().toImage().pixelColor(secretCenter))) {
+    error = QStringLiteral("Editor did not show the secret before redacting");
+    return false;
+  }
+
+  // Two presses select the redact tool and switch it to solid, whose flat
+  // fill color identifies the covered area exactly.
+  QTest::keyClick(&editor, Qt::Key_D);
+  QTest::keyClick(&editor, Qt::Key_D);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(450, 355));
+  QTest::mouseMove(&editor, QPoint(530, 415), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(530, 415));
+  application.processEvents();
+
+  const QImage preview = editor.grab().toImage();
+  editor.close();
+  const QColor solid(QStringLiteral("#121216"));
+  if (showsSecret(preview.pixelColor(secretCenter))) {
+    error = QStringLiteral("Redaction preview left the secret visible");
+    return false;
+  }
+  if (preview.pixelColor(secretCenter) != solid) {
+    error = QStringLiteral("Redaction preview did not cover the secret");
+    return false;
+  }
+  if (preview.pixelColor(displacedCenter) == solid) {
+    error = QStringLiteral(
+        "Redaction preview drew the block at the selection offset");
+    return false;
+  }
+  return true;
+}
+
 bool runContinuousAnnotationToolsSmoke(QApplication &application,
                                        QString &error) {
   CaptureData capture;
@@ -876,6 +944,10 @@ int main(int argc, char **argv) {
   if (!runSpotlightAndSampleChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 79;
+  }
+  if (!runOffsetRedactionPreviewCheck(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 98;
   }
   if (!runContinuousAnnotationToolsSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

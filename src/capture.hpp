@@ -117,7 +117,7 @@ void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
 /**
  * Paints redaction annotations over a display-resolution selection image. The
  * source image MUST be the exact selection region scaled to `targetSize`;
- * annotations live in the same logical coordinate space as `selection`.
+ * annotations are selection-relative, spanning 0..`selection` size.
  */
 QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions,
                              const QRectF &selection, const QSizeF &targetSize);

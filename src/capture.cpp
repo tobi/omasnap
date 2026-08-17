@@ -844,9 +844,9 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
     return image;
   const qreal scaleX = targetSize.width() / selection.width();
   const qreal scaleY = targetSize.height() / selection.height();
-  applyRedactions(image, redactions, scaleX, scaleY,
-                  QPointF(-selection.left() * scaleX,
-                          -selection.top() * scaleY));
+  // The image already starts at the selection origin and redactions are
+  // selection-relative, so scaling alone maps them onto the preview.
+  applyRedactions(image, redactions, scaleX, scaleY);
   return image;
 }
 
