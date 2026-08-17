@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QLineEdit>
+#include <QPixmap>
 #include <QWidget>
 
 class QKeyEvent;
@@ -126,6 +127,9 @@ private:
   void handleToolbar(const QString &action);
   void paintEdit(QPainter &painter);
   void paintSelect(QPainter &painter);
+  void refreshBackdropCache();
+  void refreshEditCropCache(const QRectF &image, const QImage &source,
+                            const QRectF &sourceArea);
   void runOcr(const QRectF &localSelection = {});
   void setStatus(QString status);
   void scaleSelectedAnnotation(qreal factor);
@@ -174,6 +178,19 @@ private:
   bool dragStartStateValid_ = false;
   bool dragChanged_ = false;
   QString snapshotPath_;
+  // Preview-only scaling caches, keyed on the source image's cacheKey so a
+  // replaced capture or re-rendered redaction preview rebuilds them. Export
+  // paths keep rendering from capture_.source at native resolution.
+  QPixmap backdrop_;
+  QPixmap dimmedBackdrop_;
+  QSize backdropSize_;
+  qreal backdropRatio_ = 0.0;
+  qint64 backdropKey_ = 0;
+  QPixmap editCrop_;
+  QSize editCropSize_;
+  qreal editCropRatio_ = 0.0;
+  qint64 editCropKey_ = 0;
+  QRectF editCropArea_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
   int pinCount_ = 0;
   QString status_ =

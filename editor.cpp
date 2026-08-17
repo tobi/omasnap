@@ -40,6 +40,7 @@ constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
 constexpr qreal kToolbarWidth = 760;
 constexpr qreal kMinimumRedactionExtent = 5.0;
+constexpr int kBackdropDim = 143;
 
 qreal toolbarScale(qreal availableWidth) {
   constexpr qreal sideMargins = 16.0;
@@ -1982,14 +1983,81 @@ void CaptureEditor::updatePointerCursor() {
     setCursor(Qt::CrossCursor);
 }
 
+/** Scales the capture to the widget once instead of on every repaint. */
+void CaptureEditor::refreshBackdropCache() {
+  const qreal ratio = devicePixelRatioF();
+  const QSize device = (QSizeF(size()) * ratio).toSize();
+  const qint64 key = capture_.source.cacheKey();
+  if (device.isEmpty()) {
+    backdrop_ = {};
+    dimmedBackdrop_ = {};
+    backdropSize_ = {};
+    return;
+  }
+  if (!backdrop_.isNull() && backdropSize_ == device && backdropKey_ == key &&
+      qFuzzyCompare(backdropRatio_, ratio))
+    return;
+
+  backdropSize_ = device;
+  backdropRatio_ = ratio;
+  backdropKey_ = key;
+  backdrop_ = QPixmap(device);
+  backdrop_.setDevicePixelRatio(ratio);
+  backdrop_.fill(Qt::transparent);
+  {
+    QPainter cache(&backdrop_);
+    cache.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    cache.drawImage(QRectF(QPointF(), QSizeF(device) / ratio), capture_.source);
+  }
+  dimmedBackdrop_ = backdrop_.copy();
+  {
+    QPainter cache(&dimmedBackdrop_);
+    cache.fillRect(QRectF(QPointF(), QSizeF(device) / ratio),
+                   QColor(0, 0, 0, kBackdropDim));
+  }
+}
+
+/** Scales the frozen crop the editor shows once per selection, size and
+ *  source image; sourceArea addresses the native pixels to show. */
+void CaptureEditor::refreshEditCropCache(const QRectF &image,
+                                         const QImage &source,
+                                         const QRectF &sourceArea) {
+  const qreal ratio = devicePixelRatioF();
+  const QSize device = (QSizeF(image.size()) * ratio).toSize();
+  const qint64 key = source.cacheKey();
+  if (device.isEmpty()) {
+    editCrop_ = {};
+    editCropSize_ = {};
+    return;
+  }
+  if (!editCrop_.isNull() && editCropSize_ == device && editCropKey_ == key &&
+      editCropArea_ == sourceArea && qFuzzyCompare(editCropRatio_, ratio))
+    return;
+
+  editCropSize_ = device;
+  editCropRatio_ = ratio;
+  editCropKey_ = key;
+  editCropArea_ = sourceArea;
+  editCrop_ = QPixmap(device);
+  editCrop_.setDevicePixelRatio(ratio);
+  editCrop_.fill(Qt::transparent);
+  QPainter cache(&editCrop_);
+  cache.setRenderHint(QPainter::SmoothPixmapTransform, true);
+  cache.drawImage(QRectF(QPointF(), QSizeF(device) / ratio), source,
+                  sourceArea);
+}
+
 void CaptureEditor::paintSelect(QPainter &painter) {
-  painter.drawImage(rect(), capture_.source);
-  painter.fillRect(rect(), QColor(0, 0, 0, 143));
+  refreshBackdropCache();
+  painter.drawPixmap(rect(), dimmedBackdrop_);
 
   if (windowMode_) {
     if (hoveredWindow_ >= 0 && hoveredWindow_ < capture_.windows.size()) {
       const QRect window = capture_.windows.at(hoveredWindow_).rect;
-      painter.drawImage(window, capture_.source, sourceRect(window));
+      painter.save();
+      painter.setClipRect(window);
+      painter.drawPixmap(rect(), backdrop_);
+      painter.restore();
     }
     for (int index = 0; index < capture_.windows.size(); ++index) {
       const WindowTarget &window = capture_.windows.at(index);
@@ -1999,7 +2067,10 @@ void CaptureEditor::paintSelect(QPainter &painter) {
       painter.drawRect(window.rect);
     }
   } else if (!selection_.isEmpty()) {
-    painter.drawImage(selection_, capture_.source, sourceRect(selection_));
+    painter.save();
+    painter.setClipRect(selection_);
+    painter.drawPixmap(rect(), backdrop_);
+    painter.restore();
     painter.setPen(QPen(Qt::white, 2));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(selection_);
@@ -2075,21 +2146,23 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     preview.redactionSeed = activeRedactionSeed_;
     redactions.push_back(std::move(preview));
   }
+  if (!redactions.isEmpty() && (redactionPreviewCache_.isNull() ||
+                                cachedRedactionSelection_ != selection_ ||
+                                cachedPreviewRedactions_ != redactions)) {
+    cachedRedactionSelection_ = selection_;
+    cachedPreviewRedactions_ = redactions;
+    redactionPreviewCache_ =
+        renderCapture(capture_, selection_, redactions, BackgroundStyle::None);
+  }
+  // Redactions replace the visible crop with their already redacted preview;
+  // either way the shown pixels are scaled to the canvas once, not per frame.
+  refreshEditCropCache(
+      image, redactions.isEmpty() ? capture_.source : redactionPreviewCache_,
+      redactions.isEmpty() ? sourceRect(selection_)
+                           : QRectF(redactionPreviewCache_.rect()));
   painter.save();
   painter.setClipPath(clip);
-  if (redactions.isEmpty()) {
-    painter.drawImage(image, capture_.source, sourceRect(selection_));
-  } else {
-    if (redactionPreviewCache_.isNull() ||
-        cachedRedactionSelection_ != selection_ ||
-        cachedPreviewRedactions_ != redactions) {
-      cachedRedactionSelection_ = selection_;
-      cachedPreviewRedactions_ = redactions;
-      redactionPreviewCache_ = renderCapture(capture_, selection_, redactions,
-                                             BackgroundStyle::None);
-    }
-    painter.drawImage(image, redactionPreviewCache_);
-  }
+  painter.drawPixmap(image, editCrop_, QRectF(editCrop_.rect()));
   painter.restore();
 
   painter.save();
