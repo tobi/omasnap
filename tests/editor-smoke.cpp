@@ -565,6 +565,67 @@ bool runSpotlightAndSampleChecks(QString &error) {
   return true;
 }
 
+/** Checks that the live preview magnifies redacted pixels, never the source. */
+bool runSpotlightRedactionPreviewCheck(QApplication &application,
+                                       QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  {
+    QPainter painter(&capture.source);
+    painter.fillRect(QRect(200, 200, 100, 60),
+                     QColor(QStringLiteral("#ff0000")));
+  }
+  capture.preview = capture.source;
+
+  // Full screen selects the whole capture and draws it at 84,68 scaled by
+  // 0.79, so the secret patch covers 242,226 to 321,273 in widget coordinates
+  // and its center sits at 281,250. The preview lens is deliberately smaller
+  // than the redaction so a correct lens can only show redacted pixels.
+  const auto spotlightCenterColor = [&](bool redact) {
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::Fullscreen);
+    editor.resize(800, 600);
+    editor.show();
+    application.processEvents();
+    if (redact) {
+      QTest::keyClick(&editor, Qt::Key_D);
+      QTest::keyClick(&editor, Qt::Key_D);
+      QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(230, 214));
+      QTest::mouseMove(&editor, QPoint(333, 285), 20);
+      QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                          QPoint(333, 285));
+      application.processEvents();
+    }
+    QTest::keyClick(&editor, Qt::Key_S);
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(251, 230));
+    QTest::mouseMove(&editor, QPoint(311, 270), 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(311, 270));
+    application.processEvents();
+    const QColor color = editor.grab().toImage().pixelColor(QPoint(281, 250));
+    editor.close();
+    return color;
+  };
+
+  const auto showsSecret = [](const QColor &color) {
+    return color.red() > 180 && color.green() < 70 && color.blue() < 70;
+  };
+  if (!showsSecret(spotlightCenterColor(false))) {
+    error = QStringLiteral("Spotlight preview did not magnify the capture");
+    return false;
+  }
+  if (showsSecret(spotlightCenterColor(true))) {
+    error = QStringLiteral("Spotlight preview magnified un-redacted pixels");
+    return false;
+  }
+  return true;
+}
+
 bool runContinuousAnnotationToolsSmoke(QApplication &application,
                                        QString &error) {
   CaptureData capture;
@@ -876,6 +937,10 @@ int main(int argc, char **argv) {
   if (!runSpotlightAndSampleChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 79;
+  }
+  if (!runSpotlightRedactionPreviewCheck(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 86;
   }
   if (!runContinuousAnnotationToolsSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
