@@ -562,6 +562,15 @@ int CaptureEditor::annotationAt(const QPointF &point) const {
   return -1;
 }
 
+int CaptureEditor::hoveredSpotlightAt(const QPointF &position) const {
+  if (dragging_ || !editImageRect().contains(position))
+    return -1;
+  const int index = annotationAt(toAnnotationPoint(position));
+  if (index < 0 || annotations_.at(index).kind != Annotation::Kind::Spotlight)
+    return -1;
+  return index;
+}
+
 void CaptureEditor::scaleSelectedAnnotation(qreal factor) {
   if (selectedAnnotation_ < 0 || selectedAnnotation_ >= annotations_.size())
     return;
@@ -2202,11 +2211,23 @@ void CaptureEditor::wheelEvent(QWheelEvent *event) {
                   .arg(QString::fromLatin1(kTextSizeNames.at(
                       static_cast<std::size_t>(textSizeIndex_)))));
   } else if (tool_ == Tool::Spotlight) {
-    spotlightMagnification_ =
-        std::clamp(spotlightMagnification_ + (step > 0 ? 0.25 : -0.25), 1.0,
-                   4.0);
-    setStatus(QStringLiteral("Spotlight magnification · %1× · wheel adjusts")
-                  .arg(spotlightMagnification_, 0, 'f', 1));
+    const qreal delta = step > 0 ? 0.25 : -0.25;
+    const int hovered = hoveredSpotlightAt(event->position());
+    if (hovered >= 0) {
+      recordEdit();
+      Annotation &annotation = annotations_[hovered];
+      annotation.magnification =
+          std::clamp(annotation.magnification + delta, 1.0, 4.0);
+      spotlightMagnification_ = annotation.magnification;
+      setStatus(QStringLiteral("Spotlight magnification · %1× · wheel adjusts")
+                    .arg(annotation.magnification, 0, 'f', 1));
+      scheduleSnapshot();
+    } else {
+      spotlightMagnification_ =
+          std::clamp(spotlightMagnification_ + delta, 1.0, 4.0);
+      setStatus(QStringLiteral("Spotlight magnification · %1× · wheel adjusts")
+                    .arg(spotlightMagnification_, 0, 'f', 1));
+    }
   } else if (tool_ == Tool::Arrow || tool_ == Tool::Line ||
              tool_ == Tool::Freehand || tool_ == Tool::Highlighter ||
              tool_ == Tool::Marker) {

@@ -830,6 +830,117 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+/** Checks that the wheel retargets the spotlight under the cursor. */
+bool runSpotlightWheelSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  // Fine banding so a magnification change moves the sampled loupe pixels.
+  for (int y = 0; y < capture.source.height(); ++y) {
+    for (int x = 0; x < capture.source.width(); ++x) {
+      const int band = ((x / 3) + (y / 5)) % 3;
+      capture.source.setPixelColor(
+          x, y, QColor(40 + band * 70, 60 + band * 50, 90 + band * 40));
+    }
+  }
+  capture.preview = capture.source;
+
+  const QString snapshotPath = temporarySnapshotPath();
+  QFile::remove(snapshotPath);
+
+  const auto armSpotlightTool = [&application](CaptureEditor &editor) {
+    editor.resize(800, 600);
+    editor.show();
+    application.processEvents();
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+    QTest::mouseMove(&editor, QPoint(700, 500), 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(700, 500));
+    QTest::keyClick(&editor, Qt::Key_S);
+    application.processEvents();
+  };
+  const auto drawSpotlight = [&application](CaptureEditor &editor) {
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(300, 250));
+    QTest::mouseMove(&editor, QPoint(500, 400), 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(500, 400));
+    application.processEvents();
+  };
+  const auto sendWheel = [&application](CaptureEditor &editor,
+                                        const QPointF &position, int notches) {
+    for (int notch = 0; notch < notches; ++notch) {
+      QWheelEvent wheel(position, position, {}, {0, 120}, Qt::NoButton,
+                        Qt::NoModifier, Qt::NoScrollPhase, false);
+      QApplication::sendEvent(&editor, &wheel);
+    }
+    application.processEvents();
+  };
+  // Widget centre of the spotlight drawn above, and a point clear of it.
+  const QPointF overSpotlight(400, 325);
+  const QPointF awayFromSpotlight(160, 160);
+
+  CaptureEditor editor(capture);
+  armSpotlightTool(editor);
+  drawSpotlight(editor);
+  if (editor.cursor().shape() != Qt::CrossCursor) {
+    error = QStringLiteral("Spotlight tool did not stay armed after placement");
+    return false;
+  }
+  const QImage placed = flushedSnapshot(editor, snapshotPath);
+  if (placed.isNull()) {
+    error = QStringLiteral("Spotlight placement did not render a snapshot");
+    return false;
+  }
+
+  sendWheel(editor, overSpotlight, 4);
+  const QImage adjusted = flushedSnapshot(editor, snapshotPath);
+  if (adjusted.isNull() || adjusted == placed) {
+    error = QStringLiteral(
+        "Wheel over a placed spotlight did not change its magnification");
+    return false;
+  }
+  for (int notch = 0; notch < 4; ++notch)
+    QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+  application.processEvents();
+  if (flushedSnapshot(editor, snapshotPath) != placed) {
+    error = QStringLiteral("Undo did not restore the spotlight magnification");
+    return false;
+  }
+  for (int notch = 0; notch < 4; ++notch)
+    QTest::keyClick(&editor, Qt::Key_Y, Qt::ControlModifier);
+  application.processEvents();
+  if (flushedSnapshot(editor, snapshotPath) != adjusted) {
+    error = QStringLiteral("Redo did not restore the adjusted magnification");
+    return false;
+  }
+
+  sendWheel(editor, awayFromSpotlight, 4);
+  if (flushedSnapshot(editor, snapshotPath) != adjusted) {
+    error = QStringLiteral(
+        "Wheel away from a spotlight changed the placed spotlight");
+    return false;
+  }
+  editor.close();
+
+  // Away from any spotlight the wheel still moves the default that the next
+  // spotlight inherits.
+  CaptureEditor defaultEditor(capture);
+  armSpotlightTool(defaultEditor);
+  sendWheel(defaultEditor, awayFromSpotlight, 4);
+  drawSpotlight(defaultEditor);
+  const QImage inherited = flushedSnapshot(defaultEditor, snapshotPath);
+  if (inherited.isNull() || inherited == placed) {
+    error = QStringLiteral(
+        "Wheel away from any spotlight did not move the default magnification");
+    return false;
+  }
+  defaultEditor.close();
+  QFile::remove(snapshotPath);
+  return true;
+}
 } // namespace
 /** Runs the interaction and rendering smoke checks. */
 int main(int argc, char **argv) {
@@ -880,6 +991,10 @@ int main(int argc, char **argv) {
   if (!runContinuousAnnotationToolsSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 80;
+  }
+  if (!runSpotlightWheelSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 94;
   }
   const QString outputRoot =
       argc > 1 ? QString::fromLocal8Bit(argv[1])

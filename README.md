@@ -223,7 +223,7 @@ Install the corresponding Tesseract language data before adding a language to
 | `O` | Drag an OCR region and copy recognized text |
 | `B` | Cycle backdrop |
 | `1`–`6` | Set annotation color |
-| Wheel | Scale selected layer or change active tool size |
+| Wheel | Scale selected layer, magnify the spotlight under the cursor, or change active tool size |
 | Hold `Shift` while dragging | Make rectangles and spotlights 1:1; snap lines and arrows to 45° |
 | Double-click text | Reopen text editing |
 | `Delete` | Delete selected layer |
