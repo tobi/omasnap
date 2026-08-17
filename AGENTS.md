@@ -28,12 +28,13 @@ pinned always-on-top layer surface.
 | Path | Purpose |
 |---|---|
 | `main.cpp` | CLI parsing, single-instance lock, mode dispatch (capture / edit file / pin) |
+| `instance-lock.cpp/.hpp` | Single-instance handover: cancel a running overlay, or stop it and take over for `--file` |
 | `capture.cpp/.hpp` | Capture selection overlay, snapshot lifecycle under `/run/user/<UID>/omasnap/` |
 | `editor.cpp/.hpp` | Annotation editor: tools, layers, undo/redo, rendering, export |
 | `pin.cpp/.hpp` | Pinned-capture layer-shell surfaces (bottom-right, all workspaces) |
 | `surface-capture.cpp` | Clean window capture via `ext-image-copy-capture` Wayland protocol |
 | `icons.cpp/.hpp` | Vector icon renderer for toolbar and pin controls |
-| `editor-smoke.cpp`, `transform-smoke.cpp` | Headless smoke tests (Qt Test, offscreen platform) |
+| `editor-smoke.cpp`, `transform-smoke.cpp`, `instance-lock-smoke.cpp` | Headless smoke tests (Qt Test, offscreen platform) |
 | `install-omarchy` | Omarchy installer (deps via `omarchy-pkg-add`, installs to `~/.local`) |
 | `CMakeLists.txt` | Build definition; **the version lives here** (`project(omasnap VERSION ...)`) |
 

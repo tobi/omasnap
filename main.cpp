@@ -1,6 +1,7 @@
 #include "capture.hpp"
 #include "cli-path.hpp"
 #include "editor.hpp"
+#include "instance-lock.hpp"
 #include "pin.hpp"
 
 #include <LayerShellQt/Window>
@@ -97,9 +98,20 @@ int main(int argc, char **argv) {
   PosixSignalNotifier signalNotifier(&application);
 
   QCommandLineParser parser;
-  parser.setApplicationDescription(
-      QStringLiteral("Native Wayland screenshot and annotation overlay for "
-                     "Hyprland and Omarchy."));
+  parser.setApplicationDescription(QStringLiteral(
+      "Native Wayland screenshot and annotation overlay for Hyprland and "
+      "Omarchy.\n"
+      "\n"
+      "Only one capture overlay runs at a time. Starting omasnap again while "
+      "an\noverlay is open dismisses it: the running instance is asked to "
+      "quit and the\nnew process exits without capturing, so the same hotkey "
+      "opens and closes the\noverlay. Quick output (--copy, --save) dismisses "
+      "it the same way instead of\nscreenshotting the overlay. With --file (or "
+      "an image path) the running\ninstance is stopped and the editor opens on "
+      "that image instead.\n"
+      "\n"
+      "Exit codes: 0 success, including dismissing a running overlay; 1 "
+      "capture,\nimage, or single-instance lock failure; 2 usage error."));
   parser.addHelpOption();
   parser.addVersionOption();
   const QCommandLineOption fullscreenOption(
@@ -220,9 +232,21 @@ int main(int argc, char **argv) {
   }
   QLockFile instanceLock(
       QDir(runtime).filePath(QStringLiteral("omasnap.instance")));
-  instanceLock.setStaleLockTime(0);
-  if (!instanceLock.tryLock(0))
-    return 0;
+  // Every capture, quick output included, dismisses a running overlay instead
+  // of starting a second one: grim would otherwise photograph that overlay.
+  // filePath already covers --file and a positional image path or file URL.
+  const InstanceLockResult lockResult = acquireInstanceLock(
+      instanceLock,
+      filePath.isEmpty() ? InstanceMode::Capture : InstanceMode::EditFile);
+  if (lockResult.signalledPid != 0)
+    qInfo().noquote() << QStringLiteral("Asked the running omasnap (pid %1) to "
+                                        "quit")
+                             .arg(lockResult.signalledPid);
+  if (!lockResult.proceed) {
+    if (!lockResult.error.isEmpty())
+      qCritical().noquote() << lockResult.error;
+    return lockResult.exitCode;
+  }
 
   CaptureData capture;
   QString error;
