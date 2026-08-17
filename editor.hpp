@@ -6,6 +6,7 @@
 #include <QFutureWatcher>
 #include <QLineEdit>
 #include <QPixmap>
+#include <QTimer>
 #include <QWidget>
 
 class QKeyEvent;
@@ -117,6 +118,8 @@ private:
   [[nodiscard]] EditState editState() const;
   void enterEdit(QString status);
   void persistSnapshot();
+  void schedulePersistSnapshot();
+  void flushPendingSnapshot();
   void pinSnapshot();
   void pushUndoState(const EditState &state);
   void recordEdit();
@@ -178,6 +181,8 @@ private:
   bool dragStartStateValid_ = false;
   bool dragChanged_ = false;
   QString snapshotPath_;
+  QTimer snapshotTimer_;
+  bool snapshotPending_ = false;
   // Preview-only scaling caches, keyed on the source image's cacheKey so a
   // replaced capture or re-rendered redaction preview rebuilds them. Export
   // paths keep rendering from capture_.source at native resolution.

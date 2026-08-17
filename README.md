@@ -23,8 +23,11 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
   from the same `omasnap` executable and visible on every workspace.
 - Crash-resistant working snapshots under `/run/user/<UID>/omasnap/` (falling back to
   a private `/tmp/omasnap-<UID>/`), written immediately after selection and overwritten
-  after every completed edit. Saving moves that file into `~/Pictures/Screenshots`;
-  clipboard output streams the same PNG.
+  after every completed edit. Rapid adjustments (wheel scaling, color picking and
+  sampling, backdrop cycling, redaction style toggling) coalesce into one write
+  shortly after the burst, and saving, pinning or closing flushes it first.
+  Saving moves that file into `~/Pictures/Screenshots`; clipboard output streams
+  the same PNG.
 - Verified PNG clipboard output through `wl-copy`/`wl-paste`, plus timestamped files
   under `~/Pictures/Screenshots` by default.
 - Correct native-pixel export on fractional or integer-scaled monitors.
@@ -310,12 +313,14 @@ QT_QPA_PLATFORM=offscreen \
 ```
 
 The smoke executable exercises region/window/fullscreen startup modes, capture selection,
-temporary snapshot updates, annotation tools, undo/redo, vector movement and scaling,
-text editing, OCR, native-DPI output, endpoint-only line selection, cached backdrop
-brightness, redacted canvas caching, and external crop handles.
+temporary snapshot updates and their debounced coalescing, annotation tools, undo/redo,
+vector movement and scaling, text editing, OCR, native-DPI output, endpoint-only line
+selection, cached backdrop brightness, redacted canvas caching, and external crop
+handles.
 
-`OMASNAP_SMOKE_BENCH=1` turns the same executable into a repaint benchmark on a 5K
-capture, printing milliseconds per frame in both editor phases.
+`OMASNAP_SMOKE_BENCH=1` turns the same executable into a repaint/snapshot benchmark on a
+5K capture, printing milliseconds per frame in both editor phases and the write count of
+a ten-notch scaling burst.
 
 `.github/workflows/build-linux.yml` performs the same release build and interaction smoke
 in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux

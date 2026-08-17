@@ -40,6 +40,10 @@ constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
 constexpr qreal kToolbarWidth = 760;
 constexpr qreal kMinimumRedactionExtent = 5.0;
+// Rapid adjustments (wheel scaling, color picking, style toggles) coalesce
+// into one working-snapshot write instead of one native-resolution PNG per
+// input event.
+constexpr int kSnapshotDebounceMs = 250;
 constexpr int kBackdropDim = 143;
 
 qreal toolbarScale(qreal availableWidth) {
@@ -261,6 +265,11 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     setGeometry(QGuiApplication::primaryScreen()->geometry());
   cursor_ = mapFromGlobal(QCursor::pos());
 
+  snapshotTimer_.setSingleShot(true);
+  snapshotTimer_.setInterval(kSnapshotDebounceMs);
+  connect(&snapshotTimer_, &QTimer::timeout, this,
+          [this] { persistSnapshot(); });
+
   textEditor_ = new QLineEdit(this);
   textEditor_->hide();
   textEditor_->setFrame(false);
@@ -314,6 +323,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
 }
 
 CaptureEditor::~CaptureEditor() {
+  flushPendingSnapshot();
   if (snapshotPath_.isEmpty() || !QFile::exists(snapshotPath_))
     return;
   const QString runtime = secureRuntimeDirectory();
@@ -456,7 +466,7 @@ void CaptureEditor::scaleSelectedAnnotation(qreal factor) {
         std::clamp(annotation.magnification * factor, 1.0, 4.0);
     setStatus(QStringLiteral("Spotlight magnification · %1× · wheel adjusts")
                   .arg(annotation.magnification, 0, 'f', 1));
-    persistSnapshot();
+    schedulePersistSnapshot();
     return;
   }
   const QPointF center = annotationBounds(annotation).center();
@@ -492,7 +502,7 @@ void CaptureEditor::scaleSelectedAnnotation(qreal factor) {
   }
   setStatus(QStringLiteral("Selected layer · wheel zoom %1%")
                 .arg(qRound(factor * 100)));
-  persistSnapshot();
+  schedulePersistSnapshot();
 }
 
 QRectF CaptureEditor::colorPaletteRect() const {
@@ -557,7 +567,7 @@ void CaptureEditor::applyCustomColor(const QPointF &position) {
           Annotation::Kind::Redaction) {
     recordEdit();
     annotations_[selectedAnnotation_].color = customColor_;
-    persistSnapshot();
+    schedulePersistSnapshot();
   }
   update();
 }
@@ -855,6 +865,8 @@ void CaptureEditor::redoEdit() {
 }
 
 void CaptureEditor::persistSnapshot() {
+  snapshotTimer_.stop();
+  snapshotPending_ = false;
   if (selection_.isEmpty())
     return;
   if (snapshotPath_.isEmpty())
@@ -866,9 +878,25 @@ void CaptureEditor::persistSnapshot() {
     qWarning().noquote() << error;
 }
 
+/** Queues the working snapshot so a burst of edits writes one PNG. */
+void CaptureEditor::schedulePersistSnapshot() {
+  if (selection_.isEmpty())
+    return;
+  snapshotPending_ = true;
+  snapshotTimer_.start();
+}
+
+/** Writes a queued snapshot immediately; every exit path calls this. */
+void CaptureEditor::flushPendingSnapshot() {
+  if (!snapshotPending_)
+    return;
+  persistSnapshot();
+}
+
 void CaptureEditor::pinSnapshot() {
   if (busy_ || selection_.isEmpty())
     return;
+  flushPendingSnapshot();
 
   prunePinnedSnapshots();
   const QString path = pinnedSnapshotPath(++pinCount_);
@@ -1107,6 +1135,7 @@ void CaptureEditor::finish(OutputMode mode) {
   busy_ = true;
   setStatus(QStringLiteral("Preparing screenshot…"));
   QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+  // Supersedes any debounced write: the output is this snapshot file.
   persistSnapshot();
   const QFileInfo snapshotFile(snapshotPath_);
   if (snapshotPath_.isEmpty() || !snapshotFile.exists() ||
@@ -1202,7 +1231,7 @@ void CaptureEditor::handleToolbar(const QString &action) {
             Annotation::Kind::Redaction) {
       recordEdit();
       annotations_[selectedAnnotation_].color = annotationColor();
-      persistSnapshot();
+      schedulePersistSnapshot();
     }
   } else if (action == QStringLiteral("custom-color")) {
     usingCustomColor_ = true;
@@ -1215,7 +1244,7 @@ void CaptureEditor::handleToolbar(const QString &action) {
         (static_cast<int>(backgroundStyle_) + 1) % 5);
     setStatus(QStringLiteral("Backdrop: %1 · B cycles")
                   .arg(backgroundName(backgroundStyle_)));
-    persistSnapshot();
+    schedulePersistSnapshot();
   } else if (action == QStringLiteral("undo")) {
     undoEdit();
   } else if (action == QStringLiteral("redo")) {
@@ -1350,7 +1379,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
               : RedactionStyle::Solid;
       setStatus(QStringLiteral("Selected redaction: %1 · D toggles")
                     .arg(redactionStyleName(redaction.redactionStyle)));
-      persistSnapshot();
+      schedulePersistSnapshot();
     } else {
       if (tool_ == Tool::Redact) {
         redactionStyle_ = redactionStyle_ == RedactionStyle::Solid
@@ -1379,7 +1408,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
         (static_cast<int>(backgroundStyle_) + 1) % 5);
     setStatus(QStringLiteral("Backdrop: %1 · B cycles")
                   .arg(backgroundName(backgroundStyle_)));
-    persistSnapshot();
+    schedulePersistSnapshot();
   } else if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_6) {
     colorIndex_ = event->key() - Qt::Key_1;
     usingCustomColor_ = false;
@@ -1388,7 +1417,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
             Annotation::Kind::Redaction) {
       recordEdit();
       annotations_[selectedAnnotation_].color = annotationColor();
-      persistSnapshot();
+      schedulePersistSnapshot();
     }
   } else {
     QWidget::keyPressEvent(event);
@@ -1688,7 +1717,7 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
             Annotation::Kind::Spotlight) {
       recordEdit();
       annotations_[selectedAnnotation_].color = customColor_;
-      persistSnapshot();
+      schedulePersistSnapshot();
     }
     QString clipboardError;
     static_cast<void>(copyTextToClipboard(

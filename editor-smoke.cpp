@@ -10,6 +10,7 @@
 #include "eyedropper.hpp"
 
 #include <QApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
@@ -32,6 +33,35 @@
 #include <sys/resource.h>
 
 namespace {
+// Comfortably longer than the editor's snapshot debounce window.
+constexpr int kSnapshotSettleMs = 400;
+
+/** Sends one wheel notch to the editor, like a mouse scroll. */
+void sendWheelNotch(QWidget &editor, int direction) {
+  QWheelEvent wheel(QPointF(400, 300), QPointF(400, 300), {},
+                    {0, 120 * direction}, Qt::NoButton, Qt::NoModifier,
+                    Qt::NoScrollPhase, false);
+  QApplication::sendEvent(&editor, &wheel);
+  QApplication::processEvents();
+}
+
+/** Selects a region, draws a line and selects that line for scaling. */
+void prepareSelectedLine(QWidget &editor) {
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+  QTest::mouseMove(&editor, QPoint(650, 470), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(650, 470));
+  QTest::keyClick(&editor, Qt::Key_L);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(260, 210));
+  QTest::mouseMove(&editor, QPoint(520, 265), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(520, 265));
+  // Annotation tools stay active, so return to Select before picking the line.
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(390, 238));
+  QApplication::processEvents();
+}
+
 /** The cached backdrop must still show the capture inside the selection and
  *  the dimmed capture outside it. */
 bool runBackdropCacheRenderingCheck(const CaptureData &capture,
@@ -73,6 +103,72 @@ bool runBackdropCacheRenderingCheck(const CaptureData &capture,
     }
   }
   editor.close();
+  return true;
+}
+
+/** Rapid edits must coalesce into one snapshot write that still lands, and
+ *  saving must output the final state. */
+bool runSnapshotDebounceCheck(const CaptureData &capture,
+                              const QString &snapshotPath,
+                              const QString &savedRoot, QString &error) {
+  QFile::remove(snapshotPath);
+  CaptureEditor editor(capture);
+  editor.resize(800, 600);
+  editor.show();
+  QApplication::processEvents();
+  prepareSelectedLine(editor);
+  if (!QFileInfo::exists(snapshotPath)) {
+    error = QStringLiteral("Selecting an area did not write a snapshot");
+    return false;
+  }
+  QTest::qWait(kSnapshotSettleMs);
+  const QImage beforeSingle(snapshotPath);
+  if (beforeSingle.isNull()) {
+    error = QStringLiteral("Working snapshot was unreadable");
+    return false;
+  }
+
+  sendWheelNotch(editor, 1);
+  if (QImage(snapshotPath) != beforeSingle) {
+    error = QStringLiteral("Wheel scaling wrote its snapshot synchronously");
+    return false;
+  }
+  QTest::qWait(kSnapshotSettleMs);
+  const QImage afterSingle(snapshotPath);
+  if (afterSingle.isNull() || afterSingle == beforeSingle) {
+    error = QStringLiteral("Debounced snapshot never landed");
+    return false;
+  }
+
+  for (int notch = 0; notch < 5; ++notch)
+    sendWheelNotch(editor, 1);
+  if (QImage(snapshotPath) != afterSingle) {
+    error = QStringLiteral("Burst of edits was not coalesced");
+    return false;
+  }
+  QTest::qWait(kSnapshotSettleMs);
+  const QImage afterBurst(snapshotPath);
+  if (afterBurst.isNull() || afterBurst == afterSingle) {
+    error = QStringLiteral("Coalesced snapshot never landed");
+    return false;
+  }
+
+  const QStringList before =
+      QDir(savedRoot).entryList({QStringLiteral("*.png")}, QDir::Files);
+  QTest::keyClick(&editor, Qt::Key_S, Qt::ControlModifier);
+  QApplication::processEvents();
+  QStringList saved =
+      QDir(savedRoot).entryList({QStringLiteral("*.png")}, QDir::Files);
+  for (const QString &existing : before)
+    saved.removeAll(existing);
+  if (editor.isVisible() || saved.size() != 1) {
+    error = QStringLiteral("Saving after a burst of edits produced no file");
+    return false;
+  }
+  if (QImage(QDir(savedRoot).filePath(saved.constFirst())) != afterBurst) {
+    error = QStringLiteral("Saved screenshot did not match the final state");
+    return false;
+  }
   return true;
 }
 
@@ -138,7 +234,7 @@ bool runRedactedCropCacheCheck(QString &error) {
 /** Reports repaint and working-snapshot cost on a 5K capture. Enabled with
  *  OMASNAP_SMOKE_BENCH=1; uses only public API so the same harness builds
  *  against any revision of the editor. */
-void runEditorBenchmark() {
+void runEditorBenchmark(const QString &snapshotPath) {
   constexpr QSize nativeSize(5120, 2880);
   constexpr QSize logicalSize(2560, 1440);
   constexpr int frames = 20;
@@ -196,9 +292,35 @@ void runEditorBenchmark() {
   QApplication::processEvents();
   const double editMs = renderFrames();
 
+  // Wheel-scaling burst: how many snapshot writes land, and at what cost.
+  const auto snapshotStamp = [&snapshotPath] {
+    const QFileInfo info(snapshotPath);
+    return QStringLiteral("%1/%2")
+        .arg(info.lastModified().toMSecsSinceEpoch())
+        .arg(info.size());
+  };
+  QString stamp = snapshotStamp();
+  int burstWrites = 0;
+  QElapsedTimer burst;
+  burst.start();
+  for (int notch = 0; notch < 10; ++notch) {
+    sendWheelNotch(editor, 1);
+    const QString current = snapshotStamp();
+    if (current != stamp) {
+      ++burstWrites;
+      stamp = current;
+    }
+  }
+  const double burstMs = burst.nsecsElapsed() / 1e6;
+  QTest::qWait(kSnapshotSettleMs);
+  const int settledWrites = snapshotStamp() != stamp ? 1 : 0;
+
   std::printf("bench.paint.select.ms_per_frame=%.2f\n", selectMs);
   std::printf("bench.paint.edit.ms_per_frame=%.2f\n", editMs);
   std::printf("bench.snapshot.single_write_ms=%.2f\n", enterEditMs);
+  std::printf("bench.snapshot.burst_writes=%d\n", burstWrites);
+  std::printf("bench.snapshot.burst_ms=%.2f\n", burstMs);
+  std::printf("bench.snapshot.writes_after_settle=%d\n", settledWrites);
   std::fflush(stdout);
 }
 
@@ -1086,7 +1208,7 @@ int main(int argc, char **argv) {
   const QString snapshotPath = temporarySnapshotPath();
   QFile::remove(snapshotPath);
   if (qEnvironmentVariableIsSet("OMASNAP_SMOKE_BENCH")) {
-    runEditorBenchmark();
+    runEditorBenchmark(snapshotPath);
     QFile::remove(snapshotPath);
     return 0;
   }
@@ -1360,6 +1482,8 @@ int main(int argc, char **argv) {
       editor.grab().toImage().copy(QRect(100, 150, 600, 350));
   if (beforeSelectorZoom == afterSelectorZoom)
     return 30;
+  // Wheel scaling debounces its working-snapshot write.
+  QTest::qWait(kSnapshotSettleMs);
   const QImage scaledLineSnapshot(snapshotPath);
   if (scaledLineSnapshot.isNull() || scaledLineSnapshot == lineSnapshot)
     return 45;
@@ -1464,7 +1588,8 @@ int main(int argc, char **argv) {
   }
   const QImage beforeBackdropSnapshot(snapshotPath);
   QTest::keyClick(&editor, Qt::Key_B);
-  application.processEvents();
+  // Backdrop cycling debounces its working-snapshot write.
+  QTest::qWait(kSnapshotSettleMs);
   if (QImage(snapshotPath) == beforeBackdropSnapshot)
     return 55;
   // Palette toolbar button (index 8 after Highlighter was inserted).
@@ -1475,6 +1600,8 @@ int main(int argc, char **argv) {
   // Custom color control in the open palette strip.
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(470, 134));
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(320, 200));
+  // Color picking debounces its write; land it before the next editor opens.
+  QTest::qWait(kSnapshotSettleMs);
   // Freehand toolbar button.
   QTest::mouseMove(&editor, QPoint(198, 92), 20);
   application.processEvents();
@@ -1520,7 +1647,8 @@ int main(int argc, char **argv) {
     QTest::mouseClick(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(360, 230));
     QTest::keyClick(&redactionEditor, Qt::Key_D);
-    application.processEvents();
+    // Redaction style toggling debounces its working-snapshot write.
+    QTest::qWait(kSnapshotSettleMs);
     const QImage solidRedaction(snapshotPath);
     if (solidRedaction.isNull() || solidRedaction == pixelatedRedaction)
       return 74;
@@ -1782,7 +1910,10 @@ int main(int argc, char **argv) {
   QTest::mouseMove(&previewClipEditor, QPoint(500, 305), 20);
   QTest::mouseRelease(&previewClipEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(500, 305));
-  application.processEvents();
+  // Backdrop cycling above debounced a write, and this editor stays open for
+  // the rest of the run: land it now instead of during a later check, since
+  // every editor in this process shares one working-snapshot path.
+  QTest::qWait(kSnapshotSettleMs);
   const QImage clippedPreview = previewClipEditor.grab().toImage();
   for (int y = 270; y <= 330; ++y) {
     for (int x = 690; x <= 760; ++x) {
@@ -1979,6 +2110,11 @@ int main(int argc, char **argv) {
   if (!runRedactedCropCacheCheck(previewError)) {
     qWarning().noquote() << previewError;
     return 88;
+  }
+  if (!runSnapshotDebounceCheck(capture, snapshotPath, savedRoot,
+                                previewError)) {
+    qWarning().noquote() << previewError;
+    return 89;
   }
 
   QString transformError;
