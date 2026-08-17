@@ -311,8 +311,11 @@ QT_QPA_PLATFORM=offscreen \
 
 The smoke executable exercises region/window/fullscreen startup modes, capture selection,
 temporary snapshot updates, annotation tools, undo/redo, vector movement and scaling,
-text editing, OCR, native-DPI output, endpoint-only line selection, and external crop
-handles.
+text editing, OCR, native-DPI output, endpoint-only line selection, cached backdrop
+brightness, and external crop handles.
+
+`OMASNAP_SMOKE_BENCH=1` turns the same executable into a repaint benchmark on a 5K
+capture, printing milliseconds per frame in both editor phases.
 
 `.github/workflows/build-linux.yml` performs the same release build and interaction smoke
 in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux

@@ -20,6 +20,7 @@
 #include <QFileInfo>
 #include <QFontMetricsF>
 #include <QPainter>
+#include <QPixmap>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QWheelEvent>
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <numbers>
 #include <csignal>
 #include <sys/resource.h>
@@ -39,6 +41,126 @@ template <typename Editor>
 QImage flushedSnapshot(Editor &editor, const QString &) {
   return editor.renderCurrentOutput();
 }
+
+/** The cached backdrop must still show the capture inside the selection and
+ *  the dimmed capture outside it. */
+bool runBackdropCacheRenderingCheck(const CaptureData &capture,
+                                    QString &error) {
+  if (capture.source.size() != QSize(800, 600) ||
+      capture.preview.size() != capture.source.size()) {
+    error = QStringLiteral("Backdrop check expects an unscaled 800x600 capture");
+    return false;
+  }
+  CaptureEditor editor(capture);
+  editor.resize(800, 600);
+  editor.show();
+  QApplication::processEvents();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(150, 120));
+  QTest::mouseMove(&editor, QPoint(600, 430), 20);
+  QApplication::processEvents();
+  const QImage ui = editor.grab().toImage();
+
+  for (const QPoint &inside : {QPoint(300, 250), QPoint(500, 400)}) {
+    if (ui.pixelColor(inside) != capture.source.pixelColor(inside)) {
+      error = QStringLiteral("Selection preview no longer matches the capture");
+      return false;
+    }
+  }
+  // Outside the selection the capture stays visible under a 143/255 black
+  // wash, exactly as the per-frame resample used to draw it.
+  for (const QPoint &outside : {QPoint(40, 40), QPoint(720, 540)}) {
+    const QColor source = capture.source.pixelColor(outside);
+    const QColor dimmed = ui.pixelColor(outside);
+    const auto matches = [](int actual, int expected) {
+      return std::abs(actual - expected) <= 2;
+    };
+    if (!matches(dimmed.red(), source.red() * (255 - 143) / 255) ||
+        !matches(dimmed.green(), source.green() * (255 - 143) / 255) ||
+        !matches(dimmed.blue(), source.blue() * (255 - 143) / 255)) {
+      error = QStringLiteral("Dimmed backdrop brightness changed");
+      return false;
+    }
+  }
+  editor.close();
+  return true;
+}
+
+/** Reports repaint cost on a 5K capture. Enabled with OMASNAP_SMOKE_BENCH=1;
+ *  uses only public API so the same harness builds against any revision of
+ *  the editor. */
+void runEditorBenchmark() {
+  constexpr QSize nativeSize(5120, 2880);
+  constexpr QSize logicalSize(2560, 1440);
+  constexpr int frames = 20;
+
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("BENCH");
+  capture.monitor.geometry = {0, 0, logicalSize.width(), logicalSize.height()};
+  capture.monitor.pixelSize = nativeSize;
+  capture.monitor.scale = 2.0;
+  capture.source = QImage(nativeSize, QImage::Format_ARGB32_Premultiplied);
+  {
+    QPainter painter(&capture.source);
+    QLinearGradient gradient(0, 0, nativeSize.width(), nativeSize.height());
+    gradient.setColorAt(0, QColor(QStringLiteral("#172033")));
+    gradient.setColorAt(1, QColor(QStringLiteral("#5278b5")));
+    painter.fillRect(capture.source.rect(), gradient);
+  }
+  capture.preview = capture.source.scaled(logicalSize, Qt::IgnoreAspectRatio,
+                                          Qt::SmoothTransformation);
+
+  CaptureEditor editor(capture);
+  editor.resize(logicalSize);
+  editor.show();
+  QApplication::processEvents();
+
+  QPixmap target(logicalSize);
+  const auto renderFrames = [&editor, &target] {
+    QElapsedTimer timer;
+    timer.start();
+    for (int frame = 0; frame < frames; ++frame)
+      editor.render(&target);
+    return timer.nsecsElapsed() / 1e6 / frames;
+  };
+
+  // Select phase, mid-drag: dimmed backdrop plus the bright selection.
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(200, 200));
+  QTest::mouseMove(&editor, QPoint(2300, 1300), 5);
+  QApplication::processEvents();
+  const double selectMs = renderFrames();
+
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(2300, 1300));
+  QApplication::processEvents();
+
+  // Edit phase: the frozen crop plus annotation layers.
+  QTest::keyClick(&editor, Qt::Key_L);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(600, 500));
+  QTest::mouseMove(&editor, QPoint(1400, 900), 5);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1400, 900));
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(1000, 700));
+  QApplication::processEvents();
+  const double editMs = renderFrames();
+
+  // Edit phase with an active redaction: the canvas draws the already
+  // display-resolution redaction layer.
+  QTest::keyClick(&editor, Qt::Key_D);
+  QTest::keyClick(&editor, Qt::Key_D);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(700, 600));
+  QTest::mouseMove(&editor, QPoint(1500, 1000), 5);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1500, 1000));
+  QApplication::processEvents();
+  const double redactedEditMs = renderFrames();
+
+  std::printf("bench.paint.select.ms_per_frame=%.2f\n", selectMs);
+  std::printf("bench.paint.edit.ms_per_frame=%.2f\n", editMs);
+  std::printf("bench.paint.edit_redacted.ms_per_frame=%.2f\n", redactedEditMs);
+  std::fflush(stdout);
+}
+
 /** Checks that positional local image targets are recognized. */
 bool runPositionalImageTargetCheck(QString &error) {
   QTemporaryDir directory;
@@ -1380,6 +1502,10 @@ int main(int argc, char **argv) {
   QApplication application(argc, argv);
   if (!loadCaptureFonts())
     return 17;
+  if (qEnvironmentVariableIsSet("OMASNAP_SMOKE_BENCH")) {
+    runEditorBenchmark();
+    return 0;
+  }
   QString snapshotError;
   if (!runPositionalImageTargetCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
@@ -2330,6 +2456,12 @@ int main(int argc, char **argv) {
       qWarning().noquote() << clipboardError;
       return 64;
     }
+  }
+
+  QString backdropError;
+  if (!runBackdropCacheRenderingCheck(capture, backdropError)) {
+    qWarning().noquote() << backdropError;
+    return 88;
   }
 
   QString transformError;

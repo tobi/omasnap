@@ -41,6 +41,7 @@ constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
 constexpr qreal kToolbarWidth = 760;
 constexpr qreal kMinimumRedactionExtent = 5.0;
+constexpr int kBackdropDim = 143;
 
 qreal toolbarScale(qreal availableWidth) {
   constexpr qreal sideMargins = 16.0;
@@ -2299,19 +2300,56 @@ void CaptureEditor::updatePointerCursor() {
     setCursor(Qt::CrossCursor);
 }
 
+/** Scales the capture to the widget once instead of on every repaint. */
+void CaptureEditor::refreshBackdropCache() {
+  const qreal ratio = devicePixelRatioF();
+  const QSize device = (QSizeF(size()) * ratio).toSize();
+  const qint64 key = capture_.source.cacheKey();
+  if (device.isEmpty()) {
+    backdrop_ = {};
+    dimmedBackdrop_ = {};
+    backdropSize_ = {};
+    return;
+  }
+  if (!backdrop_.isNull() && backdropSize_ == device && backdropKey_ == key &&
+      qFuzzyCompare(backdropRatio_, ratio))
+    return;
+
+  backdropSize_ = device;
+  backdropRatio_ = ratio;
+  backdropKey_ = key;
+  backdrop_ = QPixmap(device);
+  backdrop_.setDevicePixelRatio(ratio);
+  backdrop_.fill(Qt::transparent);
+  {
+    QPainter cache(&backdrop_);
+    cache.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    cache.drawImage(QRectF(QPointF(), QSizeF(device) / ratio), capture_.source);
+  }
+  dimmedBackdrop_ = backdrop_.copy();
+  {
+    QPainter cache(&dimmedBackdrop_);
+    cache.fillRect(QRectF(QPointF(), QSizeF(device) / ratio),
+                   QColor(0, 0, 0, kBackdropDim));
+  }
+}
+
 void CaptureEditor::paintSelect(QPainter &painter) {
   if (capture_.source.isNull()) {
-    painter.fillRect(rect(), QColor(0, 0, 0, 143));
+    painter.fillRect(rect(), QColor(0, 0, 0, kBackdropDim));
     drawStatusPill(painter, rect(), status_);
     return;
   }
-  painter.drawImage(rect(), capture_.source);
-  painter.fillRect(rect(), QColor(0, 0, 0, 143));
+  refreshBackdropCache();
+  painter.drawPixmap(rect(), dimmedBackdrop_);
 
   if (windowMode_) {
     if (hoveredWindow_ >= 0 && hoveredWindow_ < capture_.windows.size()) {
       const QRect window = capture_.windows.at(hoveredWindow_).rect;
-      painter.drawImage(window, capture_.source, sourceRect(window));
+      painter.save();
+      painter.setClipRect(window);
+      painter.drawPixmap(rect(), backdrop_);
+      painter.restore();
     }
     for (int index = 0; index < capture_.windows.size(); ++index) {
       const WindowTarget &window = capture_.windows.at(index);
@@ -2321,7 +2359,10 @@ void CaptureEditor::paintSelect(QPainter &painter) {
       painter.drawRect(window.rect);
     }
   } else if (!selection_.isEmpty()) {
-    painter.drawImage(selection_, capture_.source, sourceRect(selection_));
+    painter.save();
+    painter.setClipRect(selection_);
+    painter.drawPixmap(rect(), backdrop_);
+    painter.restore();
     painter.setPen(QPen(Qt::white, 2));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(selection_);
