@@ -269,6 +269,8 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   snapshotTimer_.setInterval(kSnapshotDebounceMs);
   connect(&snapshotTimer_, &QTimer::timeout, this,
           [this] { persistSnapshot(); });
+  connect(&snapshotWatcher_, &QFutureWatcher<QString>::finished, this,
+          [this] { handleSnapshotWriteFinished(); });
 
   textEditor_ = new QLineEdit(this);
   textEditor_->hide();
@@ -864,6 +866,9 @@ void CaptureEditor::redoEdit() {
   setStatus(QStringLiteral("Redo · Ctrl+Z to undo"));
 }
 
+/** Hands the working snapshot to the thread pool: rendering and PNG encoding a
+ *  native-resolution selection costs far too much to run between input
+ *  events. */
 void CaptureEditor::persistSnapshot() {
   snapshotTimer_.stop();
   snapshotPending_ = false;
@@ -871,10 +876,55 @@ void CaptureEditor::persistSnapshot() {
     return;
   if (snapshotPath_.isEmpty())
     snapshotPath_ = temporarySnapshotPath();
-  const QImage image =
-      renderCapture(capture_, selection_, annotations_, backgroundStyle_);
-  QString error;
-  if (!saveTemporarySnapshot(image, snapshotPath_, error))
+  if (snapshotWriteActive_) {
+    snapshotWriteQueued_ = true;
+    return;
+  }
+  startSnapshotWrite();
+}
+
+/** Starts the one worker allowed to touch the snapshot file. Everything it
+ *  reads is copied here, on the GUI thread; the source image is copy-on-write
+ *  and nothing mutates it while the editor is in its Edit phase. */
+void CaptureEditor::startSnapshotWrite() {
+  snapshotWriteQueued_ = false;
+  snapshotWriteActive_ = true;
+  snapshotFuture_ = QtConcurrent::run(
+      [capture = capture_, selection = selection_, annotations = annotations_,
+       backgroundStyle = backgroundStyle_, path = snapshotPath_] {
+        const QImage image =
+            renderCapture(capture, selection, annotations, backgroundStyle);
+        QString error;
+        if (!saveTemporarySnapshot(image, path, error, SnapshotEncoding::Fast))
+          return error;
+        return QString();
+      });
+  snapshotWatcher_.setFuture(snapshotFuture_);
+}
+
+/** Collects a finished write and starts the request that arrived during it.
+ *  The watcher can also deliver a superseded future's signal, so only act once
+ *  the future actually held is done. */
+void CaptureEditor::handleSnapshotWriteFinished() {
+  if (!snapshotWriteActive_ || !snapshotFuture_.isFinished())
+    return;
+  const QString error = snapshotFuture_.result();
+  snapshotWriteActive_ = false;
+  if (!error.isEmpty())
+    qWarning().noquote() << error;
+  if (snapshotWriteQueued_)
+    startSnapshotWrite();
+}
+
+/** Blocks until no worker can write the snapshot file any more. */
+void CaptureEditor::awaitSnapshotWrite() {
+  if (!snapshotWriteActive_)
+    return;
+  snapshotFuture_.waitForFinished();
+  const QString error = snapshotFuture_.result();
+  snapshotWriteActive_ = false;
+  snapshotWriteQueued_ = false;
+  if (!error.isEmpty())
     qWarning().noquote() << error;
 }
 
@@ -886,11 +936,32 @@ void CaptureEditor::schedulePersistSnapshot() {
   snapshotTimer_.start();
 }
 
-/** Writes a queued snapshot immediately; every exit path calls this. */
-void CaptureEditor::flushPendingSnapshot() {
-  if (!snapshotPending_)
+/** Renders and writes the working snapshot here and now, at the default PNG
+ *  compression: finish() moves this very file into the user's screenshots. */
+void CaptureEditor::writeSnapshotNow() {
+  snapshotTimer_.stop();
+  snapshotPending_ = false;
+  awaitSnapshotWrite();
+  if (selection_.isEmpty())
     return;
-  persistSnapshot();
+  if (snapshotPath_.isEmpty())
+    snapshotPath_ = temporarySnapshotPath();
+  const QImage image =
+      renderCapture(capture_, selection_, annotations_, backgroundStyle_);
+  QString error;
+  if (!saveTemporarySnapshot(image, snapshotPath_, error))
+    qWarning().noquote() << error;
+}
+
+/** Leaves a complete, current snapshot on disk with no worker still running;
+ *  every exit path calls this. */
+void CaptureEditor::flushPendingSnapshot() {
+  const bool stale = snapshotPending_ || snapshotWriteQueued_;
+  snapshotTimer_.stop();
+  snapshotPending_ = false;
+  awaitSnapshotWrite();
+  if (stale)
+    writeSnapshotNow();
 }
 
 void CaptureEditor::pinSnapshot() {
@@ -983,6 +1054,11 @@ void CaptureEditor::handleEscape() {
 void CaptureEditor::chooseWindow(int index) {
   if (index < 0 || index >= capture_.windows.size())
     return;
+
+  // The capture source is replaced below, so no worker may still be rendering
+  // from the old one. Choosing a window happens before any selection exists,
+  // so this is a guard rather than a cost.
+  flushPendingSnapshot();
 
   const WindowTarget target = capture_.windows.at(index);
   setStatus(QStringLiteral("Capturing clean window surface…"));
@@ -1135,8 +1211,9 @@ void CaptureEditor::finish(OutputMode mode) {
   busy_ = true;
   setStatus(QStringLiteral("Preparing screenshot…"));
   QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-  // Supersedes any debounced write: the output is this snapshot file.
-  persistSnapshot();
+  // Supersedes any debounced or in-flight write: the output is this snapshot
+  // file, and the user keeps it, so it is worth the full compression.
+  writeSnapshotNow();
   const QFileInfo snapshotFile(snapshotPath_);
   if (snapshotPath_.isEmpty() || !snapshotFile.exists() ||
       snapshotFile.size() <= 0) {

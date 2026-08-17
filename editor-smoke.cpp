@@ -10,6 +10,7 @@
 #include "eyedropper.hpp"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -28,13 +29,64 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <numbers>
+#include <utility>
 #include <csignal>
 #include <sys/resource.h>
 
 namespace {
 // Comfortably longer than the editor's snapshot debounce window.
 constexpr int kSnapshotSettleMs = 400;
+// Working snapshots are debounced and then written off the GUI thread, so the
+// file lands some time after the edit. Every read below is bounded by this.
+constexpr int kSnapshotTimeoutMs = 5000;
+
+/** Pumps the event loop until the working snapshot satisfies `ready`, then
+ *  returns the last content read. On timeout it returns that same content so
+ *  the caller's own assertion reports the failure. */
+QImage awaitSnapshot(const QString &path,
+                     const std::function<bool(const QImage &)> &ready) {
+  QElapsedTimer timer;
+  timer.start();
+  QImage snapshot(path);
+  while (!ready(snapshot) && timer.elapsed() < kSnapshotTimeoutMs) {
+    QTest::qWait(10);
+    snapshot = QImage(path);
+  }
+  return snapshot;
+}
+
+/** Waits for the working snapshot to reach an expected image. */
+QImage awaitSnapshotMatch(const QString &path, const QImage &expected) {
+  return awaitSnapshot(path, [&expected](const QImage &snapshot) {
+    return !snapshot.isNull() &&
+           snapshot.convertToFormat(expected.format()) == expected;
+  });
+}
+
+/** Waits for the working snapshot to move on from a previous image. */
+QImage awaitSnapshotChange(const QString &path, const QImage &previous) {
+  return awaitSnapshot(path, [&previous](const QImage &snapshot) {
+    return !snapshot.isNull() && snapshot != previous;
+  });
+}
+
+/** Reads the working snapshot once no debounced or in-flight write can still
+ *  change it. For the few reads with no expected content to wait for. */
+QImage settledSnapshot(const QString &path) {
+  QElapsedTimer timer;
+  timer.start();
+  QImage snapshot(path);
+  while (timer.elapsed() < kSnapshotTimeoutMs) {
+    QTest::qWait(kSnapshotSettleMs);
+    const QImage next(path);
+    if (next == snapshot)
+      break;
+    snapshot = next;
+  }
+  return snapshot;
+}
 
 /** Sends one wheel notch to the editor, like a mouse scroll. */
 void sendWheelNotch(QWidget &editor, int direction) {
@@ -117,14 +169,10 @@ bool runSnapshotDebounceCheck(const CaptureData &capture,
   editor.show();
   QApplication::processEvents();
   prepareSelectedLine(editor);
-  if (!QFileInfo::exists(snapshotPath)) {
-    error = QStringLiteral("Selecting an area did not write a snapshot");
-    return false;
-  }
-  QTest::qWait(kSnapshotSettleMs);
-  const QImage beforeSingle(snapshotPath);
+  const QImage beforeSingle = awaitSnapshot(
+      snapshotPath, [](const QImage &snapshot) { return !snapshot.isNull(); });
   if (beforeSingle.isNull()) {
-    error = QStringLiteral("Working snapshot was unreadable");
+    error = QStringLiteral("Selecting an area did not write a snapshot");
     return false;
   }
 
@@ -133,8 +181,7 @@ bool runSnapshotDebounceCheck(const CaptureData &capture,
     error = QStringLiteral("Wheel scaling wrote its snapshot synchronously");
     return false;
   }
-  QTest::qWait(kSnapshotSettleMs);
-  const QImage afterSingle(snapshotPath);
+  const QImage afterSingle = awaitSnapshotChange(snapshotPath, beforeSingle);
   if (afterSingle.isNull() || afterSingle == beforeSingle) {
     error = QStringLiteral("Debounced snapshot never landed");
     return false;
@@ -146,8 +193,7 @@ bool runSnapshotDebounceCheck(const CaptureData &capture,
     error = QStringLiteral("Burst of edits was not coalesced");
     return false;
   }
-  QTest::qWait(kSnapshotSettleMs);
-  const QImage afterBurst(snapshotPath);
+  const QImage afterBurst = awaitSnapshotChange(snapshotPath, afterSingle);
   if (afterBurst.isNull() || afterBurst == afterSingle) {
     error = QStringLiteral("Coalesced snapshot never landed");
     return false;
@@ -167,6 +213,97 @@ bool runSnapshotDebounceCheck(const CaptureData &capture,
   }
   if (QImage(QDir(savedRoot).filePath(saved.constFirst())) != afterBurst) {
     error = QStringLiteral("Saved screenshot did not match the final state");
+    return false;
+  }
+  return true;
+}
+
+/** Working snapshots are written off the GUI thread, so they must land on
+ *  their own, the last edit must win no matter which worker started first, and
+ *  saving must flush ahead of everything still queued. */
+bool runAsyncSnapshotCheck(const CaptureData &capture,
+                           const QString &snapshotPath,
+                           const QString &savedRoot, QString &error) {
+  QFile::remove(snapshotPath);
+  CaptureEditor editor(capture);
+  editor.resize(800, 600);
+  editor.show();
+  QApplication::processEvents();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+  QTest::mouseMove(&editor, QPoint(650, 470), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(650, 470));
+  QApplication::processEvents();
+  // Entering the edit phase hands the write to the pool; it lands on its own.
+  if (awaitSnapshot(snapshotPath, [](const QImage &snapshot) {
+        return !snapshot.isNull();
+      }).isNull()) {
+    error = QStringLiteral("Entering the edit phase never wrote a snapshot");
+    return false;
+  }
+
+  // A rectangle writes immediately, and the backdrop cycles pile six more
+  // requests on top of that worker. Six cycles land back on Aurora.
+  QTest::keyClick(&editor, Qt::Key_R);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(300, 220));
+  QTest::mouseMove(&editor, QPoint(420, 280), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(420, 280));
+  for (int cycle = 0; cycle < 6; ++cycle)
+    QTest::keyClick(&editor, Qt::Key_B);
+  QApplication::processEvents();
+
+  Annotation rectangle;
+  rectangle.kind = Annotation::Kind::Rectangle;
+  rectangle.start = {175, 100};
+  rectangle.end = {295, 160};
+  rectangle.color = QColor(QStringLiteral("#ff375f"));
+  rectangle.size = 4;
+  const QImage expected = renderCapture(capture, QRectF(100, 100, 550, 370),
+                                        {rectangle}, BackgroundStyle::Aurora);
+  if (settledSnapshot(snapshotPath).convertToFormat(expected.format()) !=
+      expected) {
+    error = QStringLiteral("A stale write outlived the last edit");
+    return false;
+  }
+
+  const QStringList before =
+      QDir(savedRoot).entryList({QStringLiteral("*.png")}, QDir::Files);
+  QTest::keyClick(&editor, Qt::Key_S, Qt::ControlModifier);
+  QApplication::processEvents();
+  QStringList saved =
+      QDir(savedRoot).entryList({QStringLiteral("*.png")}, QDir::Files);
+  for (const QString &existing : before)
+    saved.removeAll(existing);
+  if (editor.isVisible() || saved.size() != 1) {
+    error = QStringLiteral("Saving after async edits produced no file");
+    return false;
+  }
+  const QString savedPath = QDir(savedRoot).filePath(saved.constFirst());
+  if (QImage(savedPath).convertToFormat(expected.format()) != expected) {
+    error = QStringLiteral("Saved screenshot did not match a fresh render");
+    return false;
+  }
+  QTest::qWait(kSnapshotSettleMs);
+  if (QFileInfo::exists(snapshotPath)) {
+    error = QStringLiteral("A late write recreated the moved working snapshot");
+    return false;
+  }
+
+  // Saving hands the working snapshot itself to the user, so it must carry the
+  // default compression rather than the fast one the editor writes with.
+  QByteArray reference;
+  QBuffer buffer(&reference);
+  if (!buffer.open(QIODevice::WriteOnly) || !expected.save(&buffer, "PNG")) {
+    error = QStringLiteral("Could not encode the reference screenshot");
+    return false;
+  }
+  const qint64 savedSize = QFileInfo(savedPath).size();
+  if (savedSize <= 0 || savedSize * 2 > reference.size() * 3) {
+    error = QStringLiteral("Saved screenshot is %1 bytes against a %2 byte "
+                           "default-compressed reference")
+                .arg(savedSize)
+                .arg(reference.size());
     return false;
   }
   return true;
@@ -315,12 +452,48 @@ void runEditorBenchmark(const QString &snapshotPath) {
   QTest::qWait(kSnapshotSettleMs);
   const int settledWrites = snapshotStamp() != stamp ? 1 : 0;
 
+  // Ctrl+A is the harshest case: select-all enters the edit phase and persists
+  // the whole 5K capture in one go. This is the time the GUI thread is gone.
+  CaptureEditor selectAllEditor(capture);
+  selectAllEditor.resize(logicalSize);
+  selectAllEditor.show();
+  QApplication::processEvents();
+  QElapsedTimer selectAll;
+  selectAll.start();
+  QTest::keyClick(&selectAllEditor, Qt::Key_A, Qt::ControlModifier);
+  const double selectAllMs = selectAll.nsecsElapsed() / 1e6;
+
+  // Encoding cost of that same snapshot, fast versus default compression.
+  const QImage fullFrame = renderCapture(
+      capture, QRectF(QPointF(), logicalSize), {}, BackgroundStyle::None);
+  const auto encode = [&fullFrame](int quality) {
+    QByteArray payload;
+    QBuffer buffer(&payload);
+    if (!buffer.open(QIODevice::WriteOnly))
+      return std::pair<double, qint64>(0.0, 0);
+    QElapsedTimer timer;
+    timer.start();
+    const bool saved = fullFrame.save(&buffer, "PNG", quality);
+    const double ms = timer.nsecsElapsed() / 1e6;
+    return std::pair<double, qint64>(ms, saved ? payload.size() : 0);
+  };
+  const auto defaultEncode = encode(-1);
+  const auto fastEncode = encode(80);
+  QTest::qWait(kSnapshotSettleMs);
+
   std::printf("bench.paint.select.ms_per_frame=%.2f\n", selectMs);
   std::printf("bench.paint.edit.ms_per_frame=%.2f\n", editMs);
   std::printf("bench.snapshot.single_write_ms=%.2f\n", enterEditMs);
+  std::printf("bench.snapshot.select_all_enter_edit_ms=%.2f\n", selectAllMs);
   std::printf("bench.snapshot.burst_writes=%d\n", burstWrites);
   std::printf("bench.snapshot.burst_ms=%.2f\n", burstMs);
   std::printf("bench.snapshot.writes_after_settle=%d\n", settledWrites);
+  std::printf("bench.encode.default_ms=%.2f\n", defaultEncode.first);
+  std::printf("bench.encode.default_bytes=%lld\n",
+              static_cast<long long>(defaultEncode.second));
+  std::printf("bench.encode.fast_ms=%.2f\n", fastEncode.first);
+  std::printf("bench.encode.fast_bytes=%lld\n",
+              static_cast<long long>(fastEncode.second));
   std::fflush(stdout);
 }
 
@@ -383,6 +556,17 @@ bool runTemporarySnapshotChecks(QString &error) {
     return false;
   }
 
+  // Every working-snapshot write uses the fast encoding: cheaper, and just as
+  // lossless as the default one.
+  QImage fastImage(64, 64, QImage::Format_ARGB32_Premultiplied);
+  fastImage.fill(QColor(QStringLiteral("#0fa1c3")));
+  if (!saveTemporarySnapshot(fastImage, path, error, SnapshotEncoding::Fast))
+    return false;
+  if (reload(path) != fastImage) {
+    error = QStringLiteral("Fast-encoded snapshot did not round-trip");
+    return false;
+  }
+
   QImage secondImage(64, 64, QImage::Format_ARGB32_Premultiplied);
   secondImage.fill(QColor(QStringLiteral("#654321")));
   if (!saveTemporarySnapshot(secondImage, path, error))
@@ -411,6 +595,8 @@ bool runTemporarySnapshotChecks(QString &error) {
     }
   }
 
+  // The file-size limit below is process-wide, so this check runs before any
+  // editor exists: an editor's snapshot worker would fail its write too.
   struct rlimit originalLimit{};
   struct sigaction originalSignal{};
   struct sigaction ignoredSignal{};
@@ -942,7 +1128,8 @@ bool runTextClickAwayCommitCheck(QApplication &application, QString &error) {
   };
   const auto snapshotMatches = [&snapshotPath](const QImage &expected) {
     return !expected.isNull() &&
-           QImage(snapshotPath).convertToFormat(expected.format()) == expected;
+           awaitSnapshotMatch(snapshotPath, expected)
+                   .convertToFormat(expected.format()) == expected;
   };
 
   CaptureEditor editor(capture);
@@ -1295,15 +1482,16 @@ int main(int argc, char **argv) {
 
     dragRectangle(true);
     const QImage freeExpected = expectedRectangle(QPointF(295, 160));
-    if (QImage(snapshotPath).convertToFormat(freeExpected.format()) !=
-        freeExpected)
+    if (awaitSnapshotMatch(snapshotPath, freeExpected)
+            .convertToFormat(freeExpected.format()) != freeExpected)
       return 91;
     QTest::keyClick(&constraintEditor, Qt::Key_Z, Qt::ControlModifier);
     application.processEvents();
 
     dragRectangle(false);
     const QImage constrainedExpected = expectedRectangle(QPointF(295, 220));
-    if (QImage(snapshotPath).convertToFormat(constrainedExpected.format()) !=
+    if (awaitSnapshotMatch(snapshotPath, constrainedExpected)
+            .convertToFormat(constrainedExpected.format()) !=
         constrainedExpected)
       return 92;
     constraintEditor.close();
@@ -1354,7 +1542,10 @@ int main(int argc, char **argv) {
     QTest::mouseRelease(&cropEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(0, leftHandle.y()));
     application.processEvents();
-    const QImage cropped(snapshotPath);
+    const QImage cropped =
+        awaitSnapshot(snapshotPath, [](const QImage &snapshot) {
+          return !snapshot.isNull() && snapshot.width() < 64;
+        });
     if (cropped.isNull() || cropped.width() < 16 || cropped.width() > 64 ||
         cropped.height() != 64)
       return 93;
@@ -1387,8 +1578,9 @@ int main(int argc, char **argv) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(650, 470));
   application.processEvents();
+  const QImage initialSnapshot = awaitSnapshot(
+      snapshotPath, [](const QImage &snapshot) { return !snapshot.isNull(); });
   const QFileInfo initialSnapshotInfo(snapshotPath);
-  const QImage initialSnapshot(snapshotPath);
   if (!initialSnapshotInfo.exists() || initialSnapshotInfo.size() <= 0 ||
       initialSnapshot.isNull())
     return 37;
@@ -1409,7 +1601,8 @@ int main(int argc, char **argv) {
   application.processEvents();
   if (editor.cursor().shape() != Qt::CrossCursor)
     return 26;
-  const QImage arrowSnapshot(snapshotPath);
+  const QImage arrowSnapshot =
+      awaitSnapshotChange(snapshotPath, initialSnapshot);
   if (arrowSnapshot.isNull() || arrowSnapshot == initialSnapshot)
     return 38;
   QTest::mouseClick(&editor, Qt::RightButton, Qt::NoModifier, QPoint(100, 100));
@@ -1423,17 +1616,17 @@ int main(int argc, char **argv) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(420, 315));
   application.processEvents();
-  if (QImage(snapshotPath) != initialSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, initialSnapshot) != initialSnapshot)
     return 56;
   QTest::keyClick(&editor, Qt::Key_Y, Qt::ControlModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != arrowSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, arrowSnapshot) != arrowSnapshot)
     return 57;
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(140, 140));
   application.processEvents();
   QTest::keyClick(&editor, Qt::Key_Delete);
   application.processEvents();
-  if (QImage(snapshotPath) != arrowSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, arrowSnapshot) != arrowSnapshot)
     return 39;
   QTest::keyClick(&editor, Qt::Key_L);
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(260, 210));
@@ -1443,16 +1636,16 @@ int main(int argc, char **argv) {
   application.processEvents();
   if (editor.cursor().shape() != Qt::CrossCursor)
     return 27;
-  const QImage lineSnapshot(snapshotPath);
+  const QImage lineSnapshot = awaitSnapshotChange(snapshotPath, arrowSnapshot);
   if (lineSnapshot.isNull() || lineSnapshot == arrowSnapshot)
     return 40;
   QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != arrowSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, arrowSnapshot) != arrowSnapshot)
     return 41;
   QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != lineSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, lineSnapshot) != lineSnapshot)
     return 42;
 
   QTest::keyClick(&editor, Qt::Key_V);
@@ -1483,17 +1676,18 @@ int main(int argc, char **argv) {
   if (beforeSelectorZoom == afterSelectorZoom)
     return 30;
   // Wheel scaling debounces its working-snapshot write.
-  QTest::qWait(kSnapshotSettleMs);
-  const QImage scaledLineSnapshot(snapshotPath);
+  const QImage scaledLineSnapshot =
+      awaitSnapshotChange(snapshotPath, lineSnapshot);
   if (scaledLineSnapshot.isNull() || scaledLineSnapshot == lineSnapshot)
     return 45;
   QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != lineSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, lineSnapshot) != lineSnapshot)
     return 46;
   QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != scaledLineSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, scaledLineSnapshot) !=
+      scaledLineSnapshot)
     return 47;
   const QImage beforeFreehandSnapshot(snapshotPath);
   QTest::keyClick(&editor, Qt::Key_F);
@@ -1505,7 +1699,8 @@ int main(int argc, char **argv) {
                       QPoint(530, 420));
   application.processEvents();
   if (editor.cursor().shape() != Qt::CrossCursor ||
-      QImage(snapshotPath) == beforeFreehandSnapshot)
+      awaitSnapshotChange(snapshotPath, beforeFreehandSnapshot) ==
+          beforeFreehandSnapshot)
     return 28;
   const QImage beforeMarkerSnapshot(snapshotPath);
   QTest::keyClick(&editor, Qt::Key_2);
@@ -1513,7 +1708,8 @@ int main(int argc, char **argv) {
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(470, 300));
   application.processEvents();
   if (editor.cursor().shape() != Qt::PointingHandCursor ||
-      QImage(snapshotPath) == beforeMarkerSnapshot)
+      awaitSnapshotChange(snapshotPath, beforeMarkerSnapshot) ==
+          beforeMarkerSnapshot)
     return 48;
   const QImage beforeTextSnapshot(snapshotPath);
   QTest::keyClick(&editor, Qt::Key_T);
@@ -1537,7 +1733,8 @@ int main(int argc, char **argv) {
   application.processEvents();
   if (!editor.grab().save(outputRoot + QStringLiteral("-text-committed.png"),
                           "PNG") ||
-      QImage(snapshotPath) == beforeTextSnapshot)
+      awaitSnapshotChange(snapshotPath, beforeTextSnapshot) ==
+          beforeTextSnapshot)
     return 20;
   const QImage beforeMoveSnapshot(snapshotPath);
   QTest::keyClick(&editor, Qt::Key_V);
@@ -1546,16 +1743,18 @@ int main(int argc, char **argv) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(420, 315));
   application.processEvents();
-  const QImage movedSnapshot(snapshotPath);
+  const QImage movedSnapshot =
+      awaitSnapshotChange(snapshotPath, beforeMoveSnapshot);
   if (movedSnapshot.isNull() || movedSnapshot == beforeMoveSnapshot)
     return 49;
   QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != beforeMoveSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, beforeMoveSnapshot) !=
+      beforeMoveSnapshot)
     return 50;
   QTest::keyClick(&editor, Qt::Key_Y, Qt::ControlModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != movedSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, movedSnapshot) != movedSnapshot)
     return 51;
   const QImage beforeEndpointSnapshot(snapshotPath);
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(590, 365));
@@ -1563,16 +1762,18 @@ int main(int argc, char **argv) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(620, 380));
   application.processEvents();
-  const QImage resizedSnapshot(snapshotPath);
+  const QImage resizedSnapshot =
+      awaitSnapshotChange(snapshotPath, beforeEndpointSnapshot);
   if (resizedSnapshot.isNull() || resizedSnapshot == beforeEndpointSnapshot)
     return 52;
   QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != beforeEndpointSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, beforeEndpointSnapshot) !=
+      beforeEndpointSnapshot)
     return 53;
   QTest::keyClick(&editor, Qt::Key_Y, Qt::ControlModifier);
   application.processEvents();
-  if (QImage(snapshotPath) != resizedSnapshot)
+  if (awaitSnapshotMatch(snapshotPath, resizedSnapshot) != resizedSnapshot)
     return 54;
   if (!editor.grab().save(outputRoot + QStringLiteral("-vector-selected.png"),
                           "PNG"))
@@ -1586,11 +1787,13 @@ int main(int argc, char **argv) {
   } else {
     return 22;
   }
-  const QImage beforeBackdropSnapshot(snapshotPath);
+  // The committed text edit writes before the backdrop is touched.
+  const QImage beforeBackdropSnapshot =
+      awaitSnapshotChange(snapshotPath, resizedSnapshot);
   QTest::keyClick(&editor, Qt::Key_B);
   // Backdrop cycling debounces its working-snapshot write.
-  QTest::qWait(kSnapshotSettleMs);
-  if (QImage(snapshotPath) == beforeBackdropSnapshot)
+  if (awaitSnapshotChange(snapshotPath, beforeBackdropSnapshot) ==
+      beforeBackdropSnapshot)
     return 55;
   // Palette toolbar button (index 8 after Highlighter was inserted).
   QTest::mouseMove(&editor, QPoint(398, 92), 20);
@@ -1623,7 +1826,11 @@ int main(int argc, char **argv) {
     QTest::mouseMove(&redactionEditor, QPoint(650, 470), 20);
     QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(650, 470));
-    const QImage beforeRedaction(snapshotPath);
+    // Both editors write to the same working snapshot, so wait for the new
+    // one's plain crop instead of assuming the file already moved on.
+    const QImage beforeRedaction = awaitSnapshotMatch(
+        snapshotPath, renderCapture(capture, QRectF(100, 100, 550, 370), {},
+                                    BackgroundStyle::None));
     QTest::keyClick(&redactionEditor, Qt::Key_D);
     QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(300, 200));
@@ -1631,7 +1838,7 @@ int main(int argc, char **argv) {
     QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(420, 200));
     application.processEvents();
-    if (QImage(snapshotPath) != beforeRedaction)
+    if (awaitSnapshotMatch(snapshotPath, beforeRedaction) != beforeRedaction)
       return 72;
     QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(300, 200));
@@ -1639,7 +1846,8 @@ int main(int argc, char **argv) {
     QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(420, 260));
     application.processEvents();
-    const QImage pixelatedRedaction(snapshotPath);
+    const QImage pixelatedRedaction =
+        awaitSnapshotChange(snapshotPath, beforeRedaction);
     if (pixelatedRedaction.isNull() || pixelatedRedaction == beforeRedaction)
       return 73;
 
@@ -1648,17 +1856,18 @@ int main(int argc, char **argv) {
                       QPoint(360, 230));
     QTest::keyClick(&redactionEditor, Qt::Key_D);
     // Redaction style toggling debounces its working-snapshot write.
-    QTest::qWait(kSnapshotSettleMs);
-    const QImage solidRedaction(snapshotPath);
+    const QImage solidRedaction =
+        awaitSnapshotChange(snapshotPath, pixelatedRedaction);
     if (solidRedaction.isNull() || solidRedaction == pixelatedRedaction)
       return 74;
     QTest::keyClick(&redactionEditor, Qt::Key_Z, Qt::ControlModifier);
     application.processEvents();
-    if (QImage(snapshotPath) != pixelatedRedaction)
+    if (awaitSnapshotMatch(snapshotPath, pixelatedRedaction) !=
+        pixelatedRedaction)
       return 75;
     QTest::keyClick(&redactionEditor, Qt::Key_Y, Qt::ControlModifier);
     application.processEvents();
-    if (QImage(snapshotPath) != solidRedaction)
+    if (awaitSnapshotMatch(snapshotPath, solidRedaction) != solidRedaction)
       return 76;
 
     QTest::mousePress(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
@@ -1667,12 +1876,13 @@ int main(int argc, char **argv) {
     QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(380, 245));
     application.processEvents();
-    const QImage movedRedaction(snapshotPath);
+    const QImage movedRedaction =
+        awaitSnapshotChange(snapshotPath, solidRedaction);
     if (movedRedaction.isNull() || movedRedaction == solidRedaction)
       return 77;
     QTest::keyClick(&redactionEditor, Qt::Key_Z, Qt::ControlModifier);
     application.processEvents();
-    if (QImage(snapshotPath) != solidRedaction)
+    if (awaitSnapshotMatch(snapshotPath, solidRedaction) != solidRedaction)
       return 78;
 
     QTest::keyClick(&redactionEditor, Qt::Key_D);
@@ -1682,7 +1892,7 @@ int main(int argc, char **argv) {
     QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(280, 190));
     application.processEvents();
-    if (QImage(snapshotPath) == solidRedaction ||
+    if (awaitSnapshotChange(snapshotPath, solidRedaction) == solidRedaction ||
         !redactionEditor.grab().save(
             outputRoot + QStringLiteral("-secure-redaction.png"), "PNG"))
       return 79;
@@ -1692,7 +1902,7 @@ int main(int argc, char **argv) {
     QTest::mouseRelease(&redactionEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(420, 190));
     application.processEvents();
-    if (QImage(snapshotPath) == beforeRedaction)
+    if (awaitSnapshotChange(snapshotPath, beforeRedaction) == beforeRedaction)
       return 81;
   }
 
@@ -2077,7 +2287,7 @@ int main(int argc, char **argv) {
     QTest::mouseClick(&finishEditor, Qt::LeftButton, Qt::NoModifier,
                       QPoint(470, 300));
     application.processEvents();
-    const QImage snapshotBeforeSave(snapshotPath);
+    const QImage snapshotBeforeSave = settledSnapshot(snapshotPath);
     if (snapshotBeforeSave.isNull())
       return 59;
     QTest::keyClick(&finishEditor, Qt::Key_S, Qt::ControlModifier);
@@ -2115,6 +2325,10 @@ int main(int argc, char **argv) {
                                 previewError)) {
     qWarning().noquote() << previewError;
     return 89;
+  }
+  if (!runAsyncSnapshotCheck(capture, snapshotPath, savedRoot, previewError)) {
+    qWarning().noquote() << previewError;
+    return 98;
   }
 
   QString transformError;

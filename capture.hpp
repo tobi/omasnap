@@ -42,6 +42,12 @@ enum class QuickOutputMode { None, Copy, Save, Both };
 enum class SpotlightShape { Ellipse, Rectangle, RoundedRectangle };
 enum class RedactionStyle { Solid, Pixelate };
 
+/** How much zlib effort a snapshot write spends. Working snapshots are
+ *  crash-recovery files on tmpfs that every edit rewrites, so they use Fast.
+ *  Anything the user keeps — the saved screenshot, a pinned capture — uses
+ *  Default so the file stays small. */
+enum class SnapshotEncoding { Default, Fast };
+
 struct Annotation {
   enum class Kind {
     Arrow,
@@ -105,8 +111,9 @@ void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
 [[nodiscard]] QString temporarySnapshotPath();
 [[nodiscard]] QString pinnedSnapshotPath(int index);
 void prunePinnedSnapshots();
-[[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
-                                         QString &error);
+[[nodiscard]] bool saveTemporarySnapshot(
+    const QImage &image, QString path, QString &error,
+    SnapshotEncoding encoding = SnapshotEncoding::Default);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);
 void sendCaptureNotification(const QString &message,
                              const QString &imagePath = {});

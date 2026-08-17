@@ -970,7 +970,8 @@ void prunePinnedSnapshots() {
   }
 }
 
-bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
+bool saveTemporarySnapshot(const QImage &image, QString path, QString &error,
+                           SnapshotEncoding encoding) {
   if (image.isNull()) {
     error = QStringLiteral("Temporary snapshot is empty");
     return false;
@@ -998,7 +999,11 @@ bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
     return false;
   }
 
-  if (!image.save(&file, "PNG")) {
+  // Qt maps PNG "quality" onto the inverse zlib level, so 80 asks for level 1:
+  // roughly a third off the encode time for a snapshot the editor overwrites
+  // on the next edit anyway.
+  const int quality = encoding == SnapshotEncoding::Fast ? 80 : -1;
+  if (!image.save(&file, "PNG", quality)) {
     file.cancelWriting();
     error = QStringLiteral("Could not save temporary snapshot: %1").arg(path);
     return false;

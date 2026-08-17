@@ -3,6 +3,7 @@
 #include "capture.hpp"
 
 #include <QElapsedTimer>
+#include <QFuture>
 #include <QFutureWatcher>
 #include <QLineEdit>
 #include <QPixmap>
@@ -120,6 +121,10 @@ private:
   void persistSnapshot();
   void schedulePersistSnapshot();
   void flushPendingSnapshot();
+  void writeSnapshotNow();
+  void startSnapshotWrite();
+  void awaitSnapshotWrite();
+  void handleSnapshotWriteFinished();
   void pinSnapshot();
   void pushUndoState(const EditState &state);
   void recordEdit();
@@ -183,6 +188,13 @@ private:
   QString snapshotPath_;
   QTimer snapshotTimer_;
   bool snapshotPending_ = false;
+  // At most one worker writes the snapshot file. A request that arrives while
+  // one runs only sets snapshotWriteQueued_, and the finished worker restarts
+  // from the state as it stands then, so the last request always wins.
+  QFuture<QString> snapshotFuture_;
+  QFutureWatcher<QString> snapshotWatcher_;
+  bool snapshotWriteActive_ = false;
+  bool snapshotWriteQueued_ = false;
   // Preview-only scaling caches, keyed on the source image's cacheKey so a
   // replaced capture or re-rendered redaction preview rebuilds them. Export
   // paths keep rendering from capture_.source at native resolution.
