@@ -130,8 +130,13 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
 [[nodiscard]] QString temporarySnapshotPath();
 [[nodiscard]] QString pinnedSnapshotPath(int index);
 void prunePinnedSnapshots();
+/**
+ * Writes `image` into the private runtime directory. `quality` is the Qt PNG
+ * quality knob, which maps inversely onto zlib levels: -1 keeps the default
+ * level, higher values compress less and encode faster.
+ */
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
-                                         QString &error);
+                                         QString &error, int quality = -1);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);
 void sendCaptureNotification(const QString &message,
                              const QString &imagePath = {});

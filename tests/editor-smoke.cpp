@@ -9,8 +9,11 @@
 #include "eyedropper.hpp"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QDebug>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QScopeGuard>
 #include <QThread>
 #include <QFile>
 #include <QFileInfo>
@@ -516,6 +519,100 @@ bool runQuickOutputChecks(QString &error) {
   return true;
 }
 
+/**
+ * Crash recovery: the working snapshot must reach disk while editing, must be
+ * consumed by the save as a default-encoded file, and must not outlive a quit.
+ */
+bool runCrashSnapshotChecks(const CaptureData &capture, QString &error) {
+  QTemporaryDir directory;
+  if (!directory.isValid()) {
+    error = QStringLiteral("Could not create crash-snapshot directory");
+    return false;
+  }
+  const QByteArray previousDir = qgetenv("OMASNAP_SCREENSHOT_DIR");
+  qputenv("OMASNAP_SCREENSHOT_DIR", directory.path().toUtf8());
+  const auto restoreDir = qScopeGuard(
+      [&previousDir] { qputenv("OMASNAP_SCREENSHOT_DIR", previousDir); });
+  const QString snapshotPath = temporarySnapshotPath();
+  QFile::remove(snapshotPath);
+  const auto settleUntilWritten = [&snapshotPath] {
+    QElapsedTimer settle;
+    settle.start();
+    while (!QFile::exists(snapshotPath) && settle.elapsed() < 5000) {
+      QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+      QThread::msleep(2);
+    }
+    return QFile::exists(snapshotPath);
+  };
+  const auto annotate = [](CaptureEditor &editor) {
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 100));
+    QTest::mouseMove(&editor, QPoint(650, 470), 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(650, 470));
+    QTest::keyClick(&editor, Qt::Key_R);
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(300, 220));
+    QTest::mouseMove(&editor, QPoint(420, 320), 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(420, 320));
+    QCoreApplication::processEvents();
+  };
+
+  {
+    CaptureEditor editor(capture);
+    editor.resize(800, 600);
+    editor.show();
+    annotate(editor);
+    if (!settleUntilWritten()) {
+      error = QStringLiteral("No working snapshot was written while editing");
+      return false;
+    }
+    editor.waitForSnapshot();
+    const QImage current = editor.renderCurrentOutput();
+    if (QImage(snapshotPath).convertToFormat(QImage::Format_ARGB32) !=
+        current.convertToFormat(QImage::Format_ARGB32)) {
+      error = QStringLiteral("Working snapshot did not reflect the edit");
+      return false;
+    }
+    QByteArray reference;
+    QBuffer referenceBuffer(&reference);
+    referenceBuffer.open(QIODevice::WriteOnly);
+    current.save(&referenceBuffer, "PNG");
+    QTest::keyClick(&editor, Qt::Key_S, Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    const QStringList files =
+        QDir(directory.path())
+            .entryList({QStringLiteral("*.png")}, QDir::Files);
+    if (files.size() != 1 || QFile::exists(snapshotPath) ||
+        QFileInfo(QDir(directory.path()).filePath(files.constFirst())).size() >
+            reference.size() * 3 / 2) {
+      error = QStringLiteral(
+          "Save did not leave exactly one default-encoded screenshot");
+      return false;
+    }
+  }
+
+  {
+    CaptureEditor quitEditor(capture);
+    quitEditor.resize(800, 600);
+    quitEditor.show();
+    annotate(quitEditor);
+    QTest::keyClick(&quitEditor, Qt::Key_Escape);
+    QTest::keyClick(&quitEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    if (!settleUntilWritten() || quitEditor.isVisible()) {
+      error = QStringLiteral("Editing before a quit left no snapshot to clean");
+      return false;
+    }
+  }
+  if (QFile::exists(snapshotPath)) {
+    error = QStringLiteral("Quitting left the working snapshot behind");
+    return false;
+  }
+  return true;
+}
+
 bool runSpotlightAndSampleChecks(QString &error) {
   CaptureData capture;
   capture.monitor.scale = 1.0;
@@ -929,6 +1026,11 @@ int main(int argc, char **argv) {
   capture.windows = {
       {{80, 80, 300, 220}, QStringLiteral("1"), QStringLiteral("first")},
       {{420, 120, 300, 320}, QStringLiteral("2"), QStringLiteral("second")}};
+
+  if (!runCrashSnapshotChecks(capture, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 99;
+  }
 
   {
     CaptureEditor constraintEditor(capture);

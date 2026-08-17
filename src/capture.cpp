@@ -947,7 +947,8 @@ void prunePinnedSnapshots() {
   }
 }
 
-bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
+bool saveTemporarySnapshot(const QImage &image, QString path, QString &error,
+                           int quality) {
   if (image.isNull()) {
     error = QStringLiteral("Temporary snapshot is empty");
     return false;
@@ -975,7 +976,7 @@ bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
     return false;
   }
 
-  if (!image.save(&file, "PNG")) {
+  if (!image.save(&file, "PNG", quality)) {
     file.cancelWriting();
     error = QStringLiteral("Could not save temporary snapshot: %1").arg(path);
     return false;

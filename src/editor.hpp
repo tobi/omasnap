@@ -211,6 +211,8 @@ private:
   bool snapshotBusy_ = false;
   bool snapshotDirty_ = false;
   bool snapshotWriteOk_ = true;
+  // Set once finish() runs: the working snapshot becomes the exported file and
+  // is written at default PNG compression instead of the fast edit encoding.
   bool snapshotOutputRequested_ = false;
   bool suppressSnapshots_ = false;
   // Background monitor capture fed to CaptureEditor::CaptureMode dispatch.

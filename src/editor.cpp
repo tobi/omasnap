@@ -976,9 +976,11 @@ void CaptureEditor::redoEdit() {
 }
 
 void CaptureEditor::scheduleSnapshot() {
-  // Edit state stays in memory and is painted as vector layers over the
-  // source image. The expensive composite is requested only by finish().
-  if (!snapshotOutputRequested_ || suppressSnapshots_ || selection_.isEmpty())
+  // Persist the composite after every completed edit so a crash leaves the
+  // annotated result on disk. Callers are edit completions (never per-motion),
+  // and snapshotBusy_/snapshotDirty_ collapse a burst into the in-flight write
+  // plus one trailing write, so no extra debounce timer is needed.
+  if (suppressSnapshots_ || selection_.isEmpty())
     return;
   if (snapshotPath_.isEmpty())
     snapshotPath_ = temporarySnapshotPath();
@@ -1001,14 +1003,18 @@ void CaptureEditor::startSnapshotRender() {
   const QRectF selection = selection_;
   const BackgroundStyle background = backgroundStyle_;
   const QString path = snapshotPath_;
+  // Mid-edit writes exist for crash recovery only, so they trade PNG size for
+  // encode latency; finish() re-renders the same path at default compression
+  // because that file becomes the screenshot the user keeps.
+  const int quality = snapshotOutputRequested_ ? -1 : 80;
   snapshotWatcher_.setFuture(QtConcurrent::run(
-      [captureCopy, annotations, selection, background, path] {
+      [captureCopy, annotations, selection, background, path, quality] {
         QString error;
         const QImage image = renderCapture(captureCopy, selection, annotations,
                                            background);
         if (image.isNull())
           return false;
-        return saveTemporarySnapshot(image, path, error);
+        return saveTemporarySnapshot(image, path, error, quality);
       }));
 }
 
