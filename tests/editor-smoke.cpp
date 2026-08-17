@@ -14,6 +14,7 @@
 #include <QThread>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontMetricsF>
 #include <QPainter>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -565,6 +566,83 @@ bool runSpotlightAndSampleChecks(QString &error) {
   return true;
 }
 
+/** Checks that clicking away commits in-progress text instead of losing it. */
+bool runTextClickAwayCommitCheck(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  capture.preview = capture.source;
+
+  const QString snapshotPath = temporarySnapshotPath();
+  const QRectF selection(100, 100, 550, 370);
+  const qreal ascent = QFontMetricsF(annotationTextFont(5.0)).ascent();
+  const auto textAnnotation = [&ascent](const QPointF &origin,
+                                        const QString &value) {
+    Annotation text;
+    text.kind = Annotation::Kind::Text;
+    text.start = origin + QPointF(0, ascent);
+    text.text = value;
+    text.color = QColor(QStringLiteral("#ff375f"));
+    text.size = 5.0;
+    return text;
+  };
+  CaptureEditor editor(capture);
+  const auto snapshotMatches = [&editor, &snapshotPath](const QImage &expected) {
+    return !expected.isNull() &&
+           flushedSnapshot(editor, snapshotPath)
+                   .convertToFormat(expected.format()) == expected;
+  };
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+  QTest::mouseMove(&editor, QPoint(650, 470), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(650, 470));
+  application.processEvents();
+
+  QTest::keyClick(&editor, Qt::Key_T);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(300, 220));
+  application.processEvents();
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(250, 400));
+  application.processEvents();
+  if (!snapshotMatches(
+          renderCapture(capture, selection, {}, BackgroundStyle::None))) {
+    error = QStringLiteral("Clicking away from empty text added an annotation");
+    return false;
+  }
+
+  const Annotation clicked =
+      textAnnotation({125, 280}, QStringLiteral("Clicked away"));
+  QTest::keyClicks(QApplication::focusWidget(), clicked.text);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(450, 300));
+  application.processEvents();
+  if (!snapshotMatches(
+          renderCapture(capture, selection, {clicked}, BackgroundStyle::None))) {
+    error = QStringLiteral("Clicking the canvas discarded in-progress text");
+    return false;
+  }
+
+  const Annotation toolbar =
+      textAnnotation({325, 180}, QStringLiteral("Toolbar"));
+  // 118,92 is the arrow tool button: the toolbar row sits above the capture.
+  QTest::keyClicks(QApplication::focusWidget(), toolbar.text);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(118, 92));
+  QTest::mouseMove(&editor, QPoint(400, 300), 10);
+  application.processEvents();
+  if (!snapshotMatches(renderCapture(capture, selection, {clicked, toolbar},
+                                     BackgroundStyle::None)) ||
+      editor.cursor().shape() != Qt::CrossCursor) {
+    error = QStringLiteral("Clicking the toolbar discarded in-progress text");
+    return false;
+  }
+  editor.close();
+  return true;
+}
+
 bool runContinuousAnnotationToolsSmoke(QApplication &application,
                                        QString &error) {
   CaptureData capture;
@@ -876,6 +954,10 @@ int main(int argc, char **argv) {
   if (!runSpotlightAndSampleChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 79;
+  }
+  if (!runTextClickAwayCommitCheck(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 87;
   }
   if (!runContinuousAnnotationToolsSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

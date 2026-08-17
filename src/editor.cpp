@@ -1854,6 +1854,11 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     return;
   }
 
+  // Clicking away from an in-progress text commits it like Return would,
+  // instead of leaving an orphaned editor or discarding what was typed.
+  if (textEditor_->isVisible())
+    acceptText();
+
   for (const ToolbarButton &button : toolbarButtons()) {
     if (button.rect.contains(cursor_)) {
       handleToolbar(button.action);
