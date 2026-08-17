@@ -82,6 +82,8 @@ hl.layer_rule({
 })
 ```
 
+Each of these keys toggles: the first press opens the overlay, the next press dismisses it.
+
 Apply and verify:
 
 ```bash
@@ -163,6 +165,33 @@ Quick output skips the annotation editor. Add `--copy` to copy only, `--save` to
 only, or both flags to copy and save. Region and window captures output after selection;
 fullscreen captures output immediately. Quick output cannot be combined with `--file` or
 `--pin`.
+
+### One instance, toggled by the same hotkey
+
+Only one capture overlay runs at a time, guarded by a lock file in the runtime snapshot
+directory. Starting omasnap while an overlay is open sends the running instance `SIGTERM`,
+which it handles with a clean Qt shutdown; the new process then exits without capturing.
+Pressing `PRINT` therefore opens the overlay and pressing it again dismisses it.
+
+Every capture invocation dismisses this way, quick output included: `--copy`/`--save`
+while an overlay is open closes the overlay and outputs nothing, rather than screenshotting
+the overlay that is still on screen.
+
+Editing an existing image is never cancelled this way: `--file` (or an image path) stops
+the running instance, waits up to two seconds for the lock, and opens the editor on that
+image. That is how a pin's Edit button and a notification click always land in the editor.
+
+A lock left behind by a crashed instance is removed and reclaimed. A lock file that cannot
+be read or written at all is reported on stderr instead of being mistaken for a running
+instance.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success, including dismissing a running overlay |
+| `1` | Capture, image, or single-instance lock failure |
+| `2` | Usage error |
 
 ### Edit an existing image
 

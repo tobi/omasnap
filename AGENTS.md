@@ -28,6 +28,7 @@ pinned always-on-top layer surface.
 | Path | Purpose |
 |---|---|
 | `src/main.cpp` | CLI parsing, single-instance lock, mode dispatch (capture / edit file / pin) |
+| `src/instance-lock.cpp/.hpp` | Single-instance handover: cancel a running overlay, or stop it and take over for `--file` |
 | `src/capture.cpp/.hpp` | Capture selection overlay, rendering, output, and private runtime snapshots |
 | `src/editor.cpp/.hpp` | Annotation editor: tools, vector layers, undo/redo, rendering, export |
 | `src/pin.cpp/.hpp` | Pinned-capture layer-shell surfaces (bottom-right, all workspaces) |
@@ -36,7 +37,7 @@ pinned always-on-top layer surface.
 | `src/cli-path.cpp/.hpp` | Command-line image target resolution |
 | `src/eyedropper.cpp/.hpp` | Display-to-source color sampling |
 | `src/pin-file.cpp/.hpp`, `src/pin-layout.cpp/.hpp` | Pin file lifecycle and layout helpers |
-| `tests/*-smoke.cpp/.hpp` | Headless Qt Test coverage, including offscreen region-click and async-capture checks |
+| `tests/*-smoke.cpp/.hpp` | Headless Qt Test coverage, including offscreen region-click, async-capture, and single-instance handover checks |
 | `install-omarchy` | Omarchy installer (deps via `omarchy-pkg-add`, installs to `~/.local`) |
 | `CMakeLists.txt` | Build definition; **the version lives here** (`project(omasnap VERSION ...)`) |
 

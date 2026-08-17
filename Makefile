@@ -11,10 +11,10 @@ QMLLINT ?= qmllint
 LINT_SOURCES := \
 	src/main.cpp src/capture.cpp src/editor.cpp src/surface-capture.cpp \
 	src/cli-path.cpp src/icons.cpp src/pin.cpp src/pin-file.cpp \
-	src/pin-layout.cpp src/eyedropper.cpp \
+	src/pin-layout.cpp src/eyedropper.cpp src/instance-lock.cpp \
 	tests/editor-smoke.cpp tests/transform-smoke.cpp \
 	tests/surface-capture-smoke.cpp tests/pin-layout-smoke.cpp \
-	tests/pin-lifecycle-smoke.cpp
+	tests/pin-lifecycle-smoke.cpp tests/instance-lock-smoke.cpp
 LINT_CHECKS ?= -*,clang-analyzer-*,bugprone-*,performance-*,misc-*
 
 .PHONY: all configure build clean install check smoke lint qt-lint

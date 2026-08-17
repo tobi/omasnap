@@ -35,6 +35,8 @@ qt_add_executable(omasnap
   src/cli-path.hpp
   src/icons.cpp
   src/icons.hpp
+  src/instance-lock.cpp
+  src/instance-lock.hpp
   src/pin.cpp
   src/pin.hpp
   src/pin-file.cpp
@@ -79,6 +81,10 @@ qt_add_executable(omasnap-smoke
   tests/editor-smoke.cpp
   src/icons.cpp
   src/icons.hpp
+  src/instance-lock.cpp
+  src/instance-lock.hpp
+  tests/instance-lock-smoke.cpp
+  tests/instance-lock-smoke.hpp
   tests/transform-smoke.cpp
   tests/transform-smoke.hpp
   src/cli-path.cpp
