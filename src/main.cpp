@@ -261,7 +261,7 @@ int main(int argc, char **argv) {
       return 1;
     }
     capture.source = image;
-    capture.preview = image;
+    capture.previewSize = image.size();
     capture.monitor.scale = 1.0;
     capture.monitor.pixelSize = image.size();
     capture.monitor.geometry = QRect(QPoint(0, 0), image.size());
@@ -311,7 +311,7 @@ int main(int argc, char **argv) {
                        if (!quickOutput(
                                renderCapture(
                                    data,
-                                   QRectF(QPointF(), data.preview.size()), {},
+                                   QRectF(QPointF(), data.previewSize), {},
                                    BackgroundStyle::None),
                                quickOutputMode, outputError)) {
                          qCritical().noquote() << outputError;

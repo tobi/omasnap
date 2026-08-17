@@ -318,7 +318,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
             redactionBaseStale_ = true;
             switch (pendingMode_) {
             case CaptureMode::Fullscreen:
-              selection_ = QRectF(QPointF(), capture_.preview.size());
+              selection_ = QRectF(QPointF(), capture_.previewSize);
               enterEdit(QStringLiteral(
                   "Full screen selected · native resolution · outer handles "
                   "crop"));
@@ -352,9 +352,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
       return;
     }
     capture_.source = job.image;
-    capture_.preview =
-        job.image.scaled(job.scaledSize, Qt::IgnoreAspectRatio,
-                         Qt::SmoothTransformation);
+    capture_.previewSize = job.scaledSize;
     selection_ = QRectF(QPointF(), job.scaledSize);
     redactionBaseStale_ = true;
     windowMode_ = false;
@@ -392,7 +390,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     pendingMode_ = mode;
     setStatus(QStringLiteral("Capturing screen…"));
   } else if (mode == CaptureMode::Fullscreen || mode == CaptureMode::File) {
-    selection_ = QRectF(QPointF(), capture_.preview.size());
+    selection_ = QRectF(QPointF(), capture_.previewSize);
     enterEdit(
         mode == CaptureMode::File
             ? QStringLiteral("Editing image from file · Copy/Save to output")
@@ -758,13 +756,13 @@ QPointF CaptureEditor::toAnnotationPoint(const QPointF &position) const {
 }
 
 QRectF CaptureEditor::sourceRect(const QRectF &logicalRect) const {
-  if (capture_.preview.isNull() || capture_.source.isNull() ||
-      capture_.preview.width() <= 0 || capture_.preview.height() <= 0)
+  if (capture_.source.isNull() || capture_.previewSize.width() <= 0 ||
+      capture_.previewSize.height() <= 0)
     return {};
   const qreal scaleX =
-      capture_.source.width() / static_cast<qreal>(capture_.preview.width());
-  const qreal scaleY =
-      capture_.source.height() / static_cast<qreal>(capture_.preview.height());
+      capture_.source.width() / static_cast<qreal>(capture_.previewSize.width());
+  const qreal scaleY = capture_.source.height() /
+                       static_cast<qreal>(capture_.previewSize.height());
   return {logicalRect.x() * scaleX, logicalRect.y() * scaleY,
           logicalRect.width() * scaleX, logicalRect.height() * scaleY};
 }
@@ -1444,7 +1442,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       windowMode_ = false;
       dragging_ = false;
       hoveredWindow_ = -1;
-      selection_ = QRectF(QPointF(), capture_.preview.size());
+      selection_ = QRectF(QPointF(), capture_.previewSize);
       enterEdit(QStringLiteral(
           "Full screen selected · native resolution · outer handles crop"));
       update();
@@ -1630,7 +1628,7 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
         return;
       const int handle = static_cast<int>(interaction_) -
                          static_cast<int>(Interaction::CropTopLeft);
-      const QSizeF previewSize = capture_.preview.size();
+      const QSizeF previewSize = capture_.previewSize;
       if (previewSize.width() <= 0.0 || previewSize.height() <= 0.0)
         return;
       const qreal sourceX = originalSelection_.left() +
@@ -1904,7 +1902,7 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
 
   const QPointF point = toAnnotationPoint(cursor_);
   if (tool_ == Tool::Eyedropper) {
-    customColor_ = sampleSourceColor(capture_.source, capture_.preview.size(),
+    customColor_ = sampleSourceColor(capture_.source, capture_.previewSize,
                                      selection_, editImageRect(), cursor_);
     usingCustomColor_ = true;
     if (customColor_.hsvHueF() >= 0)

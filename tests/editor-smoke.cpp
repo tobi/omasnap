@@ -218,7 +218,7 @@ bool runHighlighterRenderingCheck(QString &error) {
   // white source would make every alpha check read 255.
   capture.source = QImage(200, 100, QImage::Format_ARGB32_Premultiplied);
   capture.source.fill(Qt::transparent);
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
 
   Annotation highlight;
   highlight.kind = Annotation::Kind::Highlighter;
@@ -265,7 +265,7 @@ bool runSecureRedactionChecks(QString &error) {
           x, y, QColor((x * 3) % 256, (y * 5) % 256, ((x + y) * 7) % 256));
     }
   }
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
 
   Annotation pixelate;
   pixelate.kind = Annotation::Kind::Redaction;
@@ -314,7 +314,7 @@ bool runSecureRedactionChecks(QString &error) {
           x, y, capture.source.pixelColor(capture.source.width() - x - 1, y));
     }
   }
-  mirroredCapture.preview = mirroredCapture.source;
+  mirroredCapture.previewSize = mirroredCapture.source.size();
   const QImage mirrored = renderCapture(mirroredCapture, QRectF(0, 0, 96, 72),
                                         {pixelate}, BackgroundStyle::None);
   if (first.copy(redactionBounds) != mirrored.copy(redactionBounds))
@@ -364,7 +364,7 @@ bool runSecureRedactionChecks(QString &error) {
   highDpi.monitor.pixelSize = {192, 144};
   highDpi.source = capture.source.scaled(192, 144, Qt::IgnoreAspectRatio,
                                          Qt::SmoothTransformation);
-  highDpi.preview = capture.source;
+  highDpi.previewSize = capture.source.size();
   Annotation highDpiSolid = solid;
   highDpiSolid.start = {10, 10};
   highDpiSolid.end = {30, 30};
@@ -381,8 +381,7 @@ bool runSecureRedactionChecks(QString &error) {
   // final mask through the resampling kernel.
   CaptureData fractional;
   fractional.monitor.scale = 1.25;
-  fractional.preview = QImage(100, 100, QImage::Format_RGB32);
-  fractional.preview.fill(Qt::white);
+  fractional.previewSize = QSize(100, 100);
   fractional.source = QImage(125, 125, QImage::Format_RGB32);
   fractional.source.fill(Qt::white);
   for (int y = 13; y <= 38; ++y) {
@@ -409,8 +408,7 @@ bool runSecureRedactionChecks(QString &error) {
 
   CaptureData matchingFractional;
   matchingFractional.monitor.scale = 1.25;
-  matchingFractional.preview = QImage(160, 160, QImage::Format_RGB32);
-  matchingFractional.preview.fill(Qt::white);
+  matchingFractional.previewSize = QSize(160, 160);
   matchingFractional.source = QImage(200, 200, QImage::Format_RGB32);
   matchingFractional.source.fill(Qt::white);
   for (int y = 13; y <= 26; ++y) {
@@ -431,8 +429,7 @@ bool runSecureRedactionChecks(QString &error) {
 
   CaptureData nonIntegralSourceScale;
   nonIntegralSourceScale.monitor.scale = 1.5;
-  nonIntegralSourceScale.preview = QImage(1707, 100, QImage::Format_RGB32);
-  nonIntegralSourceScale.preview.fill(Qt::white);
+  nonIntegralSourceScale.previewSize = QSize(1707, 100);
   nonIntegralSourceScale.source = QImage(2561, 150, QImage::Format_RGB32);
   nonIntegralSourceScale.source.fill(Qt::white);
   for (int y = 0; y < nonIntegralSourceScale.source.height(); ++y)
@@ -622,7 +619,7 @@ bool runSpotlightAndSampleChecks(QString &error) {
   capture.source = QImage(80, 40, QImage::Format_ARGB32_Premultiplied);
   capture.source.fill(QColor(QStringLiteral("#204080")));
   capture.source.setPixelColor(10, 20, QColor(QStringLiteral("#ff0000")));
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
 
   Annotation line;
   line.kind = Annotation::Kind::Line;
@@ -673,7 +670,7 @@ bool runTextClickAwayCommitCheck(QApplication &application, QString &error) {
   capture.monitor.scale = 1.0;
   capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
   capture.source.fill(QColor(QStringLiteral("#182030")));
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
 
   const QString snapshotPath = temporarySnapshotPath();
   const QRectF selection(100, 100, 550, 370);
@@ -790,7 +787,7 @@ bool runAnnotationLayerChecks(QApplication &application, QString &error) {
     for (int x = 20; x < 40; ++x)
       capture.source.setPixelColor(x, y, secret);
   }
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
 
   Annotation redaction;
   redaction.kind = Annotation::Kind::Redaction;
@@ -856,7 +853,7 @@ bool runAnnotationLayerChecks(QApplication &application, QString &error) {
     QPainter painter(&editorCapture.source);
     painter.fillRect(QRect(200, 200, 100, 60), secret);
   }
-  editorCapture.preview = editorCapture.source;
+  editorCapture.previewSize = editorCapture.source.size();
 
   // Fullscreen draws the 800x600 capture at 84,68 scaled by 0.79. The secret
   // then covers 242,226 to 321,273, centered on 281,250. A loupe smaller than
@@ -938,7 +935,7 @@ bool runAnnotationLayerChecks(QApplication &application, QString &error) {
       QPainter painter(&offsetCapture.source);
       painter.fillRect(QRect(450, 350, 80, 60), secret);
     }
-    offsetCapture.preview = offsetCapture.source;
+    offsetCapture.previewSize = offsetCapture.source.size();
     CaptureEditor editor(offsetCapture);
     editor.resize(800, 600);
     editor.show();
@@ -1000,7 +997,7 @@ bool runContinuousAnnotationToolsSmoke(QApplication &application,
   capture.monitor.scale = 1.0;
   capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
   capture.source.fill(QColor(QStringLiteral("#182030")));
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
 
   CaptureEditor editor(capture);
   editor.resize(800, 600);
@@ -1273,7 +1270,7 @@ bool runSpotlightWheelSmoke(QApplication &application, QString &error) {
           x, y, QColor(40 + band * 70, 60 + band * 50, 90 + band * 40));
     }
   }
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
 
   const QString snapshotPath = temporarySnapshotPath();
   QFile::remove(snapshotPath);
@@ -1481,7 +1478,7 @@ int main(int argc, char **argv) {
     painter.drawText(capture.source.rect(), Qt::AlignCenter,
                      QStringLiteral("Native Qt capture editor"));
   }
-  capture.preview = capture.source;
+  capture.previewSize = capture.source.size();
   capture.windows = {
       {{80, 80, 300, 220}, QStringLiteral("1"), QStringLiteral("first")},
       {{420, 120, 300, 320}, QStringLiteral("2"), QStringLiteral("second")}};
@@ -1571,7 +1568,7 @@ int main(int argc, char **argv) {
     cropCapture.monitor.pixelSize = {64, 64};
     cropCapture.source = QImage(64, 64, QImage::Format_ARGB32_Premultiplied);
     cropCapture.source.fill(QColor(QStringLiteral("#112233")));
-    cropCapture.preview = cropCapture.source;
+    cropCapture.previewSize = cropCapture.source.size();
     CaptureEditor cropEditor(cropCapture, CaptureEditor::CaptureMode::File);
     cropEditor.resize(800, 600);
     cropEditor.show();
@@ -1607,15 +1604,15 @@ int main(int argc, char **argv) {
   QTest::mouseMove(&editor, QPoint(200, 160), 20);
   application.processEvents();
   const QImage hoverUi = editor.grab().toImage();
-  if (hoverUi.pixelColor(200, 160) != capture.preview.pixelColor(200, 160))
+  if (hoverUi.pixelColor(200, 160) != capture.source.pixelColor(200, 160))
     return 7;
   QTest::keyClick(&editor, Qt::Key_Right, Qt::MetaModifier);
   application.processEvents();
   const QImage keyboardWindowUi = editor.grab().toImage();
   if (keyboardWindowUi.pixelColor(500, 200) !=
-          capture.preview.pixelColor(500, 200) ||
+          capture.source.pixelColor(500, 200) ||
       keyboardWindowUi.pixelColor(200, 160) ==
-          capture.preview.pixelColor(200, 160))
+          capture.source.pixelColor(200, 160))
     return 8;
   QTest::keyClick(&editor, Qt::Key_Space);
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
@@ -2024,8 +2021,7 @@ int main(int argc, char **argv) {
   nativePreviewCapture.monitor.pixelSize = {1600, 1200};
   nativePreviewCapture.source = QImage(1600, 1200, QImage::Format_RGB32);
   nativePreviewCapture.source.fill(QColor(QStringLiteral("#123456")));
-  nativePreviewCapture.preview = QImage(800, 600, QImage::Format_RGB32);
-  nativePreviewCapture.preview.fill(QColor(QStringLiteral("#ff00ff")));
+  nativePreviewCapture.previewSize = QSize(800, 600);
   CaptureEditor nativePreviewEditor(nativePreviewCapture,
                                     CaptureEditor::CaptureMode::Fullscreen);
   nativePreviewEditor.resize(800, 600);
@@ -2048,7 +2044,7 @@ int main(int argc, char **argv) {
   fileData.monitor.pixelSize = {300, 200};
   fileData.source = QImage(300, 200, QImage::Format_RGB32);
   fileData.source.fill(QColor(QStringLiteral("#1a2b3c")));
-  fileData.preview = fileData.source;
+  fileData.previewSize = fileData.source.size();
   CaptureEditor fileEditor(fileData, CaptureEditor::CaptureMode::File);
   fileEditor.resize(800, 600);
   fileEditor.show();
@@ -2065,7 +2061,7 @@ int main(int argc, char **argv) {
   windowSurfaceCapture.source =
       QImage(320, 180, QImage::Format_ARGB32_Premultiplied);
   windowSurfaceCapture.source.fill(QColor(QStringLiteral("#d12f45")));
-  windowSurfaceCapture.preview = windowSurfaceCapture.source;
+  windowSurfaceCapture.previewSize = windowSurfaceCapture.source.size();
   CaptureEditor windowSurfaceEditor(windowSurfaceCapture,
                                     CaptureEditor::CaptureMode::Fullscreen);
   windowSurfaceEditor.resize(800, 600);
@@ -2212,7 +2208,7 @@ int main(int argc, char **argv) {
   clippingCapture.monitor.scale = 1.0;
   clippingCapture.source = QImage(100, 100, QImage::Format_RGB32);
   clippingCapture.source.fill(Qt::white);
-  clippingCapture.preview = clippingCapture.source;
+  clippingCapture.previewSize = clippingCapture.source.size();
   Annotation croppedOut;
   croppedOut.kind = Annotation::Kind::Rectangle;
   croppedOut.start = {120, 20};
