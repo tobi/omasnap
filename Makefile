@@ -24,13 +24,14 @@ all: build
 configure:
 	$(CMAKE) -S . -B $(BUILD_DIR) -G $(GENERATOR) \
 		-DCMAKE_BUILD_TYPE=$(BUILD_TYPE) \
+		-DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
 		-DCMAKE_INSTALL_PREFIX=$(PREFIX)
 
 build: configure
 	$(CMAKE) --build $(BUILD_DIR) --parallel
 
 smoke: build
-	QT_QPA_PLATFORM=offscreen ./$(BUILD_DIR)/omasnap-smoke \
+	QT_QPA_PLATFORM=offscreen $(BUILD_DIR)/omasnap-smoke \
 		$(BUILD_DIR)/omasnap-smoke-output
 
 lint: build
