@@ -921,6 +921,75 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
   return image;
 }
 
+bool loadClipboardImage(QImage &image, QString &error) {
+  image = {};
+  error.clear();
+
+  const ProcessResult listed =
+      runProcess(QStringLiteral("wl-paste"), {QStringLiteral("--list-types")},
+                 {}, 5000);
+  if (!listed.finished || listed.exitCode != 0) {
+    const QString detail = QString::fromUtf8(listed.error).trimmed();
+    error = detail.isEmpty()
+                ? QStringLiteral("Could not read the Wayland clipboard")
+                : QStringLiteral("Could not read the Wayland clipboard: %1")
+                      .arg(detail);
+    return false;
+  }
+
+  const QStringList offered =
+      QString::fromUtf8(listed.output)
+          .split('\n', Qt::SkipEmptyParts, Qt::CaseSensitive);
+  QStringList imageTypes;
+  const QStringList preferred{QStringLiteral("image/png"),
+                              QStringLiteral("image/jpeg"),
+                              QStringLiteral("image/webp"),
+                              QStringLiteral("image/bmp")};
+  for (const QString &mimeType : preferred) {
+    if (offered.contains(mimeType))
+      imageTypes.append(mimeType);
+  }
+  for (const QString &mimeType : offered) {
+    const QString trimmed = mimeType.trimmed();
+    if (trimmed.startsWith(QStringLiteral("image/")) &&
+        !imageTypes.contains(trimmed))
+      imageTypes.append(trimmed);
+  }
+  if (imageTypes.isEmpty()) {
+    error = QStringLiteral("Clipboard does not contain an image");
+    return false;
+  }
+
+  bool receivedImageData = false;
+  QString readError;
+  for (const QString &mimeType : imageTypes) {
+    const ProcessResult pasted = runProcess(
+        QStringLiteral("wl-paste"),
+        {QStringLiteral("--no-newline"), QStringLiteral("--type"), mimeType},
+        {}, 5000);
+    if (!pasted.finished || pasted.exitCode != 0) {
+      const QString detail = QString::fromUtf8(pasted.error).trimmed();
+      if (!detail.isEmpty())
+        readError = detail;
+      continue;
+    }
+    receivedImageData = true;
+    image = QImage::fromData(pasted.output);
+    if (!image.isNull())
+      return true;
+  }
+
+  if (!receivedImageData) {
+    error = readError.isEmpty()
+                ? QStringLiteral("Could not read clipboard image")
+                : QStringLiteral("Could not read clipboard image: %1")
+                      .arg(readError);
+    return false;
+  }
+  error = QStringLiteral("Clipboard image could not be decoded");
+  return false;
+}
+
 bool copyPngFileToClipboard(const QString &path, QString &error) {
   QFile input(path);
   if (!input.open(QIODevice::ReadOnly)) {

@@ -107,8 +107,8 @@ int main(int argc, char **argv) {
       "quit and the\nnew process exits without capturing, so the same hotkey "
       "opens and closes the\noverlay. Quick output (--copy, --save) dismisses "
       "it the same way instead of\nscreenshotting the overlay. With --file (or "
-      "an image path) the running\ninstance is stopped and the editor opens on "
-      "that image instead.\n"
+      "an image path) or --clipboard, the running\ninstance is stopped and "
+      "the editor opens on that image instead.\n"
       "\n"
       "Exit codes: 0 success, including dismissing a running overlay; 1 "
       "capture,\nimage, or single-instance lock failure; 2 usage error."));
@@ -140,6 +140,11 @@ int main(int argc, char **argv) {
                      "instead of capturing the screen."),
       QStringLiteral("path"));
   parser.addOption(fileOption);
+  const QCommandLineOption clipboardOption(
+      QStringLiteral("clipboard"),
+      QStringLiteral("Open the current clipboard image in the annotation "
+                     "editor instead of capturing the screen."));
+  parser.addOption(clipboardOption);
   const QCommandLineOption pinOption(
       QStringLiteral("pin"),
       QStringLiteral("Show an image as a pinned always-visible layer."),
@@ -153,6 +158,7 @@ int main(int argc, char **argv) {
   parser.process(application);
 
   QString filePath = parser.value(fileOption);
+  const bool clipboardInput = parser.isSet(clipboardOption);
 
   QuickOutputMode quickOutputMode = QuickOutputMode::None;
   if (parser.isSet(copyOption) && parser.isSet(saveOption))
@@ -172,8 +178,8 @@ int main(int argc, char **argv) {
 
   const QStringList positional = parser.positionalArguments();
   if (parser.isSet(pinOption)) {
-    if (!filePath.isEmpty() || requestedModes > 0 || !positional.isEmpty() ||
-        quickOutputMode != QuickOutputMode::None) {
+    if (!filePath.isEmpty() || clipboardInput || requestedModes > 0 ||
+        !positional.isEmpty() || quickOutputMode != QuickOutputMode::None) {
       qCritical()
           << "Pinned mode cannot be combined with capture or edit targets";
       return 2;
@@ -217,8 +223,14 @@ int main(int argc, char **argv) {
     qCritical() << "An image file cannot be combined with a capture mode";
     return 2;
   }
-  if (!filePath.isEmpty() && quickOutputMode != QuickOutputMode::None) {
-    qCritical() << "Quick output options cannot be combined with an image file";
+  if (clipboardInput && (!filePath.isEmpty() || requestedModes > 0)) {
+    qCritical() << "Clipboard input cannot be combined with another target";
+    return 2;
+  }
+  const bool editingImage = clipboardInput || !filePath.isEmpty();
+  if (editingImage && quickOutputMode != QuickOutputMode::None) {
+    qCritical()
+        << "Quick output options cannot be combined with an image input";
     return 2;
   }
   if (!loadCaptureFonts())
@@ -234,10 +246,10 @@ int main(int argc, char **argv) {
       QDir(runtime).filePath(QStringLiteral("omasnap.instance")));
   // Every capture, quick output included, dismisses a running overlay instead
   // of starting a second one: grim would otherwise photograph that overlay.
-  // filePath already covers --file and a positional image path or file URL.
+  // Editing an image always takes over so the requested editor can open.
   const InstanceLockResult lockResult = acquireInstanceLock(
-      instanceLock,
-      filePath.isEmpty() ? InstanceMode::Capture : InstanceMode::EditFile);
+      instanceLock, editingImage ? InstanceMode::EditFile
+                                 : InstanceMode::Capture);
   if (lockResult.signalledPid != 0)
     qInfo().noquote() << QStringLiteral("Asked the running omasnap (pid %1) to "
                                         "quit")
@@ -250,15 +262,29 @@ int main(int argc, char **argv) {
 
   CaptureData capture;
   QString error;
-  if (!filePath.isEmpty()) {
-    QString localFile = QUrl(filePath).toLocalFile();
-    if (localFile.isEmpty())
-      localFile = filePath;
-    QImage image(localFile);
-    if (image.isNull()) {
-      qCritical().noquote()
-          << QStringLiteral("Could not load image: %1").arg(filePath);
-      return 1;
+  if (editingImage) {
+    QImage image;
+    QString inputName;
+    if (clipboardInput) {
+      if (!loadClipboardImage(image, error)) {
+        const QString message =
+            QStringLiteral("Could not load clipboard image: %1").arg(error);
+        qCritical().noquote() << message;
+        sendCaptureNotification(message);
+        return 1;
+      }
+      inputName = QStringLiteral("clipboard image");
+    } else {
+      QString localFile = QUrl(filePath).toLocalFile();
+      if (localFile.isEmpty())
+        localFile = filePath;
+      image.load(localFile);
+      if (image.isNull()) {
+        qCritical().noquote()
+            << QStringLiteral("Could not load image: %1").arg(filePath);
+        return 1;
+      }
+      inputName = localFile;
     }
     capture.source = image;
     capture.preview = image;
@@ -267,7 +293,7 @@ int main(int argc, char **argv) {
     capture.monitor.geometry = QRect(QPoint(0, 0), image.size());
     captureMode = CaptureEditor::CaptureMode::File;
     qInfo().noquote() << QStringLiteral("Opened %1 for annotation (%2x%3)")
-                             .arg(localFile)
+                             .arg(inputName)
                              .arg(image.width())
                              .arg(image.height());
   } else if (!probeFocusedMonitor(capture.monitor, error)) {
@@ -279,7 +305,7 @@ int main(int argc, char **argv) {
   // Fullscreen quick output never shows an overlay: the capture runs in the
   // background and the result is written out without opening the editor UI.
   const bool instantFullscreenOutput =
-      filePath.isEmpty() && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
+      !editingImage && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
       quickOutputMode != QuickOutputMode::None;
   const QuickOutputMode editorQuickOutput = instantFullscreenOutput
                                                 ? QuickOutputMode::None
@@ -355,7 +381,7 @@ int main(int argc, char **argv) {
     editor.setFocus(Qt::ActiveWindowFocusReason);
   }
 
-  if (filePath.isEmpty()) {
+  if (!editingImage) {
     // The quick fullscreen path never shows the overlay, so it never needs the
     // window list that only window-mode hover consumes.
     editor.startCapture(captureMode, !instantFullscreenOutput);

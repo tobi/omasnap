@@ -27,6 +27,7 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
   clipboard output streams the same PNG.
 - Verified PNG clipboard output through `wl-copy`/`wl-paste`, plus timestamped files
   under `~/Pictures/Screenshots` by default.
+- Open an image already on the clipboard directly in the annotation editor.
 - Correct native-pixel export on fractional or integer-scaled monitors.
 
 ## Platform scope
@@ -163,8 +164,8 @@ result is copied, saved, or both.
 
 Quick output skips the annotation editor. Add `--copy` to copy only, `--save` to save
 only, or both flags to copy and save. Region and window captures output after selection;
-fullscreen captures output immediately. Quick output cannot be combined with `--file` or
-`--pin`.
+fullscreen captures output immediately. Quick output cannot be combined with `--file`,
+`--clipboard`, or `--pin`.
 
 ### One instance, toggled by the same hotkey
 
@@ -177,9 +178,10 @@ Every capture invocation dismisses this way, quick output included: `--copy`/`--
 while an overlay is open closes the overlay and outputs nothing, rather than screenshotting
 the overlay that is still on screen.
 
-Editing an existing image is never cancelled this way: `--file` (or an image path) stops
-the running instance, waits up to two seconds for the lock, and opens the editor on that
-image. That is how a pin's Edit button and a notification click always land in the editor.
+Editing an existing image is never cancelled this way: `--file`, `--clipboard`, or an
+image path stops the running instance, waits up to two seconds for the lock, and opens the
+editor on that image. That is how a pin's Edit button and a notification click always land
+in the editor.
 
 A lock left behind by a crashed instance is removed and reclaimed. A lock file that cannot
 be read or written at all is reported on stderr instead of being mistaken for a running
@@ -193,7 +195,7 @@ Exit codes:
 | `1` | Capture, image, or single-instance lock failure |
 | `2` | Usage error |
 
-### Edit an existing image
+### Edit an existing or clipboard image
 
 Point omasnap at any readable image and it opens straight into the annotation editor
 with the whole image selected, skipping the screen-capture step:
@@ -204,9 +206,18 @@ omasnap ~/Pictures/Screenshots/screenshot-2026-08-11_10-00-00.png
 omasnap --file /path/to/capture.png
 ```
 
+To open the image currently on the Wayland clipboard:
+
+```bash
+omasnap --clipboard
+```
+
+The clipboard must offer readable image data. Text-only clipboard contents return an
+error instead of opening an empty editor.
+
 File URLs are accepted too. A saved capture notification's "Click to edit" action launches
-`omasnap` on the finished screenshot, so it can be reopened and re-annotated. Clipboard-only
-captures are not retained on disk and therefore have no delayed edit action.
+`omasnap` on the finished screenshot, so it can be reopened and re-annotated. Captures copied
+without saving are not retained on disk and therefore have no delayed edit action.
 
 Environment overrides:
 

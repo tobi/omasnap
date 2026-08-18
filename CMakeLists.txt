@@ -79,6 +79,8 @@ target_link_libraries(omasnap PRIVATE
 
 qt_add_executable(omasnap-smoke
   tests/editor-smoke.cpp
+  tests/clipboard-smoke.cpp
+  tests/clipboard-smoke.hpp
   src/icons.cpp
   src/icons.hpp
   src/instance-lock.cpp

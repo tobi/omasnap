@@ -2,6 +2,7 @@
  */
 #include "capture.hpp"
 #include "cli-path.hpp"
+#include "clipboard-smoke.hpp"
 #include "editor.hpp"
 #include "instance-lock-smoke.hpp"
 #include "pin-layout-smoke.hpp"
@@ -2330,6 +2331,12 @@ int main(int argc, char **argv) {
       qWarning().noquote() << clipboardError;
       return 64;
     }
+  }
+
+  QString clipboardError;
+  if (!runClipboardSmoke(clipboardError)) {
+    qWarning().noquote() << clipboardError;
+    return 88;
   }
 
   QString transformError;
