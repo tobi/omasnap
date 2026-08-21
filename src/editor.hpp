@@ -46,6 +46,13 @@ public:
   bool waitForSnapshot();
   /** Renders the current selection and layer data for headless verification. */
   [[nodiscard]] QImage renderCurrentOutput() const;
+  /**
+   * Native-pixel readout drawn next to the pointer: the size of whatever frame
+   * is being drawn, or the pointer position while no frame exists yet. Empty
+   * when nothing is being measured. Public so the smoke suite can read the
+   * number without scraping it back out of the rendered overlay.
+   */
+  [[nodiscard]] QString measurementText() const;
   /** Current monitor data (background capture may be in flight). */
   const CaptureData &captureData() const { return capture_; }
 
@@ -139,6 +146,7 @@ private:
   [[nodiscard]] qreal editScale() const;
   [[nodiscard]] QPointF toAnnotationPoint(const QPointF &position) const;
   [[nodiscard]] QRectF sourceRect(const QRectF &logicalRect) const;
+  [[nodiscard]] QPointF sourcePoint(const QPointF &logicalPoint) const;
   [[nodiscard]] int windowAt(const QPointF &position) const;
   [[nodiscard]] int windowInDirection(int current, int key) const;
   [[nodiscard]] QVector<ToolbarButton> toolbarButtons() const;

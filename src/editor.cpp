@@ -165,6 +165,56 @@ void drawInstantTooltip(QPainter &painter, const QRect &bounds,
   painter.drawText(pill, Qt::AlignCenter, text);
 }
 
+/**
+ * Formats a native pixel size for the measurement readout. The number is the
+ * pixel count the export actually carries, which on a scaled monitor is not
+ * the logical size the pointer moves through.
+ */
+QString formatPixelSize(const QSizeF &size) {
+  return QStringLiteral("%1 × %2")
+      .arg(qRound(size.width()))
+      .arg(qRound(size.height()));
+}
+
+QString formatPixelPoint(const QPointF &point) {
+  return QStringLiteral("%1, %2").arg(qRound(point.x())).arg(qRound(point.y()));
+}
+
+/**
+ * Draws the measurement readout below-right of the pointer, flipping to the
+ * opposite side instead of clipping at an overlay edge. Digits use the fixed
+ * font so a live drag does not jitter the pill width per frame.
+ */
+void drawMeasureBadge(QPainter &painter, const QRect &bounds,
+                      const QPointF &cursor, const QString &text) {
+  if (text.isEmpty())
+    return;
+  QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+  font.setPixelSize(12);
+  font.setBold(true);
+  painter.setFont(font);
+  const qreal width = painter.fontMetrics().horizontalAdvance(text) + 16;
+  constexpr qreal height = 22;
+  constexpr qreal gap = 15;
+  constexpr qreal margin = 6;
+  qreal x = cursor.x() + gap;
+  if (x + width > bounds.width() - margin)
+    x = cursor.x() - gap - width;
+  qreal y = cursor.y() + gap;
+  if (y + height > bounds.height() - margin)
+    y = cursor.y() - gap - height;
+  const QRectF pill(
+      std::clamp(x, margin, std::max(margin, bounds.width() - width - margin)),
+      std::clamp(y, margin,
+                 std::max(margin, bounds.height() - height - margin)),
+      width, height);
+  painter.setPen(QPen(QColor(255, 255, 255, 42), 1));
+  painter.setBrush(QColor(12, 12, 15, 235));
+  painter.drawRoundedRect(pill, 6, 6);
+  painter.setPen(Qt::white);
+  painter.drawText(pill, Qt::AlignCenter, text);
+}
+
 void drawHotkeyLegend(QPainter &painter, const QRect &bounds,
                       const QPointF &cursor,
                       const QVector<QPair<QString, QString>> &entries) {
@@ -765,6 +815,32 @@ QRectF CaptureEditor::sourceRect(const QRectF &logicalRect) const {
       capture_.source.height() / static_cast<qreal>(capture_.previewSize.height());
   return {logicalRect.x() * scaleX, logicalRect.y() * scaleY,
           logicalRect.width() * scaleX, logicalRect.height() * scaleY};
+}
+
+QPointF CaptureEditor::sourcePoint(const QPointF &logicalPoint) const {
+  return sourceRect(QRectF(logicalPoint, QSizeF())).topLeft();
+}
+
+QString CaptureEditor::measurementText() const {
+  if (capture_.source.isNull())
+    return {};
+  if (phase_ == Phase::Select) {
+    if (windowMode_) {
+      if (hoveredWindow_ < 0 || hoveredWindow_ >= capture_.windows.size())
+        return {};
+      return formatPixelSize(
+          sourceRect(capture_.windows.at(hoveredWindow_).rect).size());
+    }
+    // A fresh drag reads 0 × 0 rather than falling back to the pointer
+    // position: the number must track the frame the moment it starts.
+    if (dragging_ || !selection_.isEmpty())
+      return formatPixelSize(sourceRect(selection_).size());
+    return formatPixelPoint(sourcePoint(cursor_));
+  }
+  if (tool_ == Tool::Select && dragging_ &&
+      interaction_ >= Interaction::CropTopLeft)
+    return formatPixelSize(sourceRect(selection_).size());
+  return {};
 }
 
 int CaptureEditor::windowAt(const QPointF &position) const {
@@ -2391,6 +2467,7 @@ void CaptureEditor::paintSelect(QPainter &painter) {
                     {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
                     {QStringLiteral("Esc ×2"), QStringLiteral("Close")}});
   drawStatusPill(painter, rect(), status_);
+  drawMeasureBadge(painter, rect(), cursor_, measurementText());
 }
 
 void CaptureEditor::paintEdit(QPainter &painter) {
@@ -2741,6 +2818,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
       }
     }
   }
+  drawMeasureBadge(painter, rect(), cursor_, measurementText());
 }
 
 void CaptureEditor::paintEvent(QPaintEvent *event) {

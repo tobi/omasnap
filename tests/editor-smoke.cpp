@@ -81,6 +81,79 @@ bool runBackdropCacheRenderingCheck(QString &error) {
   return true;
 }
 
+/**
+ * The pointer readout reports native export pixels, not the logical units the
+ * pointer travels through. On a 2x monitor a 450x310 drag exports 900x620, and
+ * quoting the logical number would make the overlay useless as a ruler.
+ */
+bool runMeasurementReadoutCheck(QString &error) {
+  CaptureData capture;
+  capture.monitor.geometry = QRect(0, 0, 800, 600);
+  capture.monitor.pixelSize = QSize(1600, 1200);
+  capture.monitor.scale = 2.0;
+  capture.source = QImage(1600, 1200, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#6480a0")));
+  capture.previewSize = QSize(800, 600);
+  capture.windows = {
+      {{80, 80, 300, 220}, QStringLiteral("1"), QStringLiteral("first")}};
+
+  CaptureEditor editor(capture);
+  // The readout is overlay-only, so this check never needs the working
+  // snapshot. Writing one would race the shared runtime path with the checks
+  // that follow.
+  editor.setSuppressSnapshots(true);
+  editor.resize(800, 600);
+  editor.show();
+  QApplication::processEvents();
+
+  const auto expect = [&editor, &error](const QString &wanted,
+                                        const QString &what) {
+    const QString actual = editor.measurementText();
+    if (actual == wanted)
+      return true;
+    error = QStringLiteral("%1 readout was \"%2\", expected \"%3\"")
+                .arg(what, actual, wanted);
+    return false;
+  };
+
+  QTest::mouseMove(&editor, QPoint(150, 120), 20);
+  QApplication::processEvents();
+  if (!expect(QStringLiteral("300, 240"), QStringLiteral("Idle pointer")))
+    return false;
+
+  QTest::keyClick(&editor, Qt::Key_Space);
+  QTest::mouseMove(&editor, QPoint(200, 150), 20);
+  QApplication::processEvents();
+  if (!expect(QStringLiteral("600 × 440"), QStringLiteral("Hovered window")))
+    return false;
+  QTest::keyClick(&editor, Qt::Key_Space);
+  QApplication::processEvents();
+
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(150, 120));
+  QApplication::processEvents();
+  if (!expect(QStringLiteral("0 × 0"), QStringLiteral("Fresh drag")))
+    return false;
+  QTest::mouseMove(&editor, QPoint(600, 430), 20);
+  QApplication::processEvents();
+  if (!expect(QStringLiteral("900 × 620"), QStringLiteral("Live drag")))
+    return false;
+
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(600, 430));
+  QApplication::processEvents();
+  // QTest carries one pointer position across every check in this binary and
+  // drops a move that repeats it, so this check parks the pointer somewhere no
+  // later check moves to first.
+  QTest::mouseMove(&editor, QPoint(512, 337), 20);
+  QApplication::processEvents();
+  // Annotating is not measuring: the badge must not shadow the canvas once the
+  // frame is settled.
+  if (!expect(QString(), QStringLiteral("Settled edit phase")))
+    return false;
+  editor.close();
+  return true;
+}
+
 /** Checks that positional local image targets are recognized. */
 bool runPositionalImageTargetCheck(QString &error) {
   QTemporaryDir directory;
@@ -1462,6 +1535,10 @@ int main(int argc, char **argv) {
   if (!runCreationConstraintCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 90;
+  }
+  if (!runMeasurementReadoutCheck(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 95;
   }
   if (!runQuickOutputChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;

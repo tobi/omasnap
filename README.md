@@ -10,6 +10,9 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 ## Features
 
 - Freeform region, window, and full-monitor capture modes.
+- A pointer-side readout that turns any drag into a ruler: the pointer position
+  while the crosshair is idle, then the frame size in native export pixels while a
+  region, a hovered window, or a crop handle is being sized.
 - Clean window-surface capture through Wayland image-copy protocols. A failed native
   capture stays in the window picker; Omasnap never substitutes a crop of the desktop.
 - Select/move/resize layers, mouse-wheel scaling, and eight external recropping handles.
@@ -239,7 +242,7 @@ Install the corresponding Tesseract language data before adding a language to
 
 | Input | Action |
 |---|---|
-| Drag | Select a region |
+| Drag | Select a region, with its native pixel size shown at the pointer |
 | `Space` | Toggle region/window selection |
 | `SUPER + Arrow` | Move among windows in window mode |
 | `Enter` | Capture the highlighted window |
@@ -322,8 +325,8 @@ QT_QPA_PLATFORM=offscreen \
 
 The smoke executable exercises region/window/fullscreen startup modes, capture selection,
 temporary snapshot updates, annotation tools, undo/redo, vector movement and scaling,
-text editing, OCR, native-DPI output, endpoint-only line selection, and external crop
-handles.
+text editing, OCR, native-DPI output, endpoint-only line selection, external crop
+handles, and the native-pixel measurement readout on a scaled monitor.
 
 `.github/workflows/build-linux.yml` performs the same release build and interaction smoke
 in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux
