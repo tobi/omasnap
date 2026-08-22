@@ -1388,6 +1388,29 @@ void CaptureEditor::adjustSelectedAnnotation(int step) {
   case Annotation::Kind::Ellipse:
     break;
   }
+  // A filled shape has no stroke showing, so weighing it would be a gesture
+  // that does nothing visible: it grows instead, like the redaction above,
+  // and says so.
+  if (annotation.filled && (annotation.kind == Annotation::Kind::Rectangle ||
+                            annotation.kind == Annotation::Kind::Ellipse)) {
+    const qreal factor = step > 0 ? 1.1 : 1.0 / 1.1;
+    const QRectF bounds = annotationBounds(annotation);
+    const QPointF center = bounds.center();
+    const qreal scale =
+        bounds.width() > 0 && bounds.height() > 0
+            ? std::max({factor, kMinimumRedactionExtent / bounds.width(),
+                        kMinimumRedactionExtent / bounds.height()})
+            : factor;
+    annotation.start = center + (annotation.start - center) * scale;
+    annotation.end = center + (annotation.end - center) * scale;
+    const QRectF grown = annotationBounds(annotation);
+    setStatus(QStringLiteral("Filled shape · %1 × %2 · R unfills it to set "
+                             "a thickness")
+                  .arg(qRound(grown.width()))
+                  .arg(qRound(grown.height())));
+    commitPatch({selectedAnnotation_});
+    return;
+  }
   annotation.size = weigh(annotation.size, 2.0, 30.0);
   setStatus(QStringLiteral("Selected layer · thickness %1 · handle resizes")
                 .arg(qRound(annotation.size)));

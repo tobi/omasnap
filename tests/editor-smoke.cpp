@@ -4696,6 +4696,42 @@ bool runLayerWeightSmoke(QApplication &application, QString &error) {
                            "settled");
     return false;
   }
+  // A filled shape has no stroke to thicken, so its wheel grows it about its
+  // center instead of doing nothing visible.
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(650, 150));
+  application.processEvents();
+  QTest::keyClick(&editor, Qt::Key_R);
+  QTest::keyClick(&editor, Qt::Key_R); // R again: fill on for the next shape
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(450, 350));
+  QTest::mouseMove(&editor, QPoint(550, 420), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(550, 420));
+  application.processEvents();
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(500, 385));
+  application.processEvents();
+  {
+    // Filled interior: (350,265)-(450,335) in annotation space. Just outside
+    // the left edge is bare; two notches up must cover it, and two back down
+    // must uncover it again.
+    const QImage before = flushedSnapshot(editor, snapshotPath);
+    if (!ink(before, 360, 300) || ink(before, 340, 300)) {
+      error = QStringLiteral("Filled shape did not render where expected");
+      return false;
+    }
+    wheel(2);
+    const QImage grown = flushedSnapshot(editor, snapshotPath);
+    if (!ink(grown, 340, 300)) {
+      error = QStringLiteral("The wheel did not grow the filled shape");
+      return false;
+    }
+    wheel(-2);
+    const QImage back = flushedSnapshot(editor, snapshotPath);
+    if (ink(back, 340, 300)) {
+      error = QStringLiteral("The wheel did not shrink the filled shape back");
+      return false;
+    }
+  }
   editor.close();
   QFile::remove(snapshotPath);
   return true;
