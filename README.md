@@ -249,6 +249,7 @@ Install the corresponding Tesseract language data before adding a language to
 |---|---|
 | Drag | Select a region, with its native pixel size shown at the pointer |
 | `Space` | Toggle region/window selection |
+| `R` | Restore the last region drawn this session (same monitor) |
 | `SUPER + Arrow` | Move among windows in window mode |
 | `Enter` | Capture the highlighted window |
 | `Ctrl+A` | Select the full focused monitor |

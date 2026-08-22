@@ -4701,6 +4701,76 @@ bool runLayerWeightSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+/** Checks that R restores the last drawn region on the same monitor and
+ *  ignores one stored for a different monitor. */
+bool runAreaLastRegionSmoke(QApplication &application, QString &error) {
+  const auto makeCapture = [](const QString &name) {
+    CaptureData capture;
+    capture.monitor.name = name;
+    capture.monitor.geometry = {0, 0, 800, 600};
+    capture.monitor.pixelSize = {800, 600};
+    capture.monitor.scale = 1.0;
+    capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+    capture.source.fill(QColor(QStringLiteral("#182030")));
+    capture.previewSize = capture.source.size();
+    return capture;
+  };
+
+  // Draw a region; committing it writes the session memory.
+  {
+    CaptureEditor editor(makeCapture(QStringLiteral("TEST")));
+    editor.resize(800, 600);
+    editor.show();
+    application.processEvents();
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(120, 140));
+    QTest::mouseMove(&editor, QPoint(520, 380), 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(520, 380));
+    application.processEvents();
+    editor.close();
+    application.processEvents();
+  }
+
+  // A fresh overlay on the same monitor at the same size restores it with R.
+  {
+    CaptureEditor editor(makeCapture(QStringLiteral("TEST")));
+    editor.resize(800, 600);
+    editor.show();
+    application.processEvents();
+    QTest::keyClick(&editor, Qt::Key_R);
+    application.processEvents();
+    if (!editor.statusForTest().contains(QStringLiteral("Last area restored"))) {
+      error = QStringLiteral("R did not restore the last region");
+      return false;
+    }
+    const QImage out = editor.renderCurrentOutput();
+    if (out.size() != QSize(400, 240)) {
+      error = QStringLiteral("Restored region was not the drawn 400x240");
+      return false;
+    }
+    editor.close();
+    application.processEvents();
+  }
+
+  // A different monitor ignores it: R stays in the select phase.
+  {
+    CaptureEditor editor(makeCapture(QStringLiteral("OTHER")));
+    editor.resize(800, 600);
+    editor.show();
+    application.processEvents();
+    QTest::keyClick(&editor, Qt::Key_R);
+    application.processEvents();
+    if (editor.statusForTest().contains(QStringLiteral("Last area restored"))) {
+      error = QStringLiteral("R restored a region stored for another monitor");
+      return false;
+    }
+    editor.close();
+    application.processEvents();
+  }
+  return true;
+}
+
 int main(int argc, char **argv) {
   // Re-executed by the instance-lock checks as the process holding the lock.
   const QString heldLockPath =
@@ -4712,6 +4782,11 @@ int main(int argc, char **argv) {
   if (!loadCaptureFonts())
     return 17;
   QString snapshotError;
+  if (!runAreaLastRegionSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 119;
+  }
+
   if (!runPositionalImageTargetCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 70;

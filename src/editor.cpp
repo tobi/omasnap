@@ -75,6 +75,55 @@ constexpr qreal kToolbarWidth = 840;
 constexpr qreal kToolbarImageGap = 46;
 constexpr qreal kMinimumRedactionExtent = 5.0;
 constexpr int kBackdropDim = 143;
+
+/// Beside the snapshots and the instance lock, in the private runtime dir.
+/// Session scratch, not configuration: gone at reboot, and a region only
+/// means anything for the screen it was drawn on. Mirrors the scroll
+/// capture's stored region; the two can share helpers once both are in.
+QString storedCaptureRegionPath() {
+  const QString runtime = secureRuntimeDirectory();
+  if (runtime.isEmpty())
+    return {};
+  return QDir(runtime).filePath(QStringLiteral("capture-region"));
+}
+
+QString formatStoredRegion(const QString &monitor, const QSize &surface,
+                           const QRect &region) {
+  return QStringLiteral("%1 %2 %3 %4 %5 %6 %7")
+      .arg(monitor.isEmpty() ? QStringLiteral("?") : monitor)
+      .arg(surface.width())
+      .arg(surface.height())
+      .arg(region.x())
+      .arg(region.y())
+      .arg(region.width())
+      .arg(region.height());
+}
+
+/// The region in `line`, or a null rect when it was written for a different
+/// monitor or surface size, does not fit, or is not what we wrote. Anything
+/// unreadable is simply not offered; there is nothing to migrate.
+QRect parseStoredRegion(const QString &line, const QString &monitor,
+                        const QSize &surface) {
+  const QStringList fields = line.trimmed().split(QLatin1Char(' '));
+  if (fields.size() != 7)
+    return {};
+  if (fields.at(0) != (monitor.isEmpty() ? QStringLiteral("?") : monitor))
+    return {};
+  bool ok = true;
+  int values[6] = {};
+  for (int index = 0; index < 6; ++index) {
+    bool field = false;
+    values[index] = fields.at(index + 1).toInt(&field);
+    ok = ok && field;
+  }
+  if (!ok || QSize(values[0], values[1]) != surface)
+    return {};
+  const QRect region(values[2], values[3], values[4], values[5]);
+  if (region.width() < 32 || region.height() < 32 ||
+      !QRect(QPoint(), surface).contains(region))
+    return {};
+  return region;
+}
 constexpr qreal kNudgeStep = 1.0;
 constexpr qreal kNudgeStepShift = 10.0;
 
@@ -456,6 +505,11 @@ void drawHotkeyLegend(QPainter &painter, const QRect &bounds,
   const QRectF other = cursorWantsLeft ? right : left;
   if (hiddenCount(panel) > hiddenCount(other))
     panel = other;
+  // A surface narrower than the card has nowhere for the flip to go: both
+  // positions span the whole width, so the card would sit on whatever is
+  // being pointed at. Step aside entirely; on any real monitor it fits.
+  if (right.left() < left.left())
+    return;
 
   painter.setPen(QPen(QColor(255, 255, 255, 34), 1));
   painter.setBrush(QColor(13, 15, 20, 224));
@@ -2938,6 +2992,28 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       chooseWindow(hoveredWindow_);
       return;
     }
+    if (!windowMode_ && !dragging_ && event->key() == Qt::Key_R &&
+        !event->modifiers()) {
+      // R brings back the last region drawn this session, written for this
+      // monitor at this size; anything else in the file is simply ignored.
+      const QString path = storedCaptureRegionPath();
+      if (!path.isEmpty()) {
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly)) {
+          const QRect region =
+              parseStoredRegion(QString::fromUtf8(file.readLine(256)),
+                                capture_.monitor.name, size());
+          if (!region.isEmpty()) {
+            selection_ = QRectF(region);
+            enterEdit(QStringLiteral("Last area restored · Select moves "
+                                     "layers · wheel zooms · outer handles "
+                                     "crop"));
+            update();
+          }
+        }
+      }
+      return;
+    }
     if (event->key() == Qt::Key_Space) {
       windowMode_ = !windowMode_;
       dragging_ = false;
@@ -3815,9 +3891,20 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
   if (phase_ == Phase::Select) {
     selection_ = normalizedSelection(dragStart_, event->position());
     dragging_ = false;
-    if (selection_.width() >= 2 && selection_.height() >= 2)
+    if (selection_.width() >= 2 && selection_.height() >= 2) {
+      // Remember the drawn region for this session, so R can bring it back
+      // on the next capture. A convenience, so failing to write is no error.
+      const QString path = storedCaptureRegionPath();
+      if (!path.isEmpty()) {
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+          file.write(formatStoredRegion(capture_.monitor.name, size(),
+                                        selection_.toRect())
+                         .toUtf8());
+      }
       enterEdit(QStringLiteral("Area selected · Select moves layers · wheel "
                                "zooms · outer handles crop"));
+    }
     updatePointerCursor();
     update();
     return;
@@ -4340,6 +4427,7 @@ void CaptureEditor::paintSelect(QPainter &painter) {
                    {{QStringLiteral("Drag"), QStringLiteral("Area")},
                     {QStringLiteral("Space"), QStringLiteral("Window")},
                     {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
+                    {QStringLiteral("R"), QStringLiteral("Last region")},
                     {QStringLiteral("Esc ×2"), QStringLiteral("Close")}});
   drawStatusPill(painter, rect(), status_);
   drawMeasureBadge(painter, rect(), cursor_, measurementText());
