@@ -1396,6 +1396,10 @@ bool runAnnotationLayerChecks(QApplication &application, QString &error) {
     QTest::mouseMove(&editor, QPoint(312, 250), 20);
     QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(312, 250));
+    // Park the pointer well below the key guide before sampling: the card
+    // sizes itself to its text now, and a pointer left at the arrow's end
+    // flips it left, over the pixels this check reads.
+    QTest::mouseMove(&editor, QPoint(400, 550), 20);
     application.processEvents();
     const QImage preview = editor.grab().toImage();
     const QImage exported = editor.renderCurrentOutput();

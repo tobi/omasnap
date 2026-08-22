@@ -435,7 +435,34 @@ void drawHotkeyLegend(QPainter &painter, const QRect &bounds,
     return;
   constexpr int columns = 2;
   const int rows = (entries.size() + columns - 1) / columns;
-  const qreal width = 414;
+  QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+  font.setPixelSize(11);
+  // Measured, not guessed: a fixed-width card clipped the longer lines, and a
+  // guide that trails off mid-word is worse than no guide.
+  const QFontMetricsF metrics(font);
+  constexpr qreal keyGap = 12;    // between a key and what it does
+  constexpr qreal columnGap = 24; // between the two columns
+  constexpr qreal padding = 12;   // card edge to text
+  qreal keyWidth[columns] = {};
+  qreal textWidth[columns] = {};
+  for (int index = 0; index < entries.size(); ++index) {
+    const int column = std::min(index / rows, columns - 1);
+    keyWidth[column] = std::max(
+        keyWidth[column], metrics.horizontalAdvance(entries.at(index).first));
+    textWidth[column] = std::max(
+        textWidth[column], metrics.horizontalAdvance(entries.at(index).second));
+  }
+  qreal columnWidth[columns] = {};
+  qreal width = 2 * padding;
+  for (int column = 0; column < columns; ++column) {
+    if (keyWidth[column] <= 0 && textWidth[column] <= 0)
+      continue;
+    columnWidth[column] = keyWidth[column] + keyGap + textWidth[column];
+    width += columnWidth[column];
+    if (column > 0)
+      width += columnGap;
+  }
+  width = std::min(width, bounds.width() - 28.0);
   const qreal height = rows * 19 + 24;
   const QRectF right(bounds.width() - width - 14, 14, width, height);
   const QRectF left(14, 14, width, height);
@@ -456,26 +483,33 @@ void drawHotkeyLegend(QPainter &painter, const QRect &bounds,
   const QRectF other = cursorWantsLeft ? right : left;
   if (hiddenCount(panel) > hiddenCount(other))
     panel = other;
+  // The flip exists so the guide never sits on what the pointer is doing.
+  // When both positions would still cover the pointer and no handle pins the
+  // card in place, there is nowhere honest to put it: step aside entirely.
+  // On any real monitor the two positions cannot both reach the pointer.
+  if (keepVisible.isEmpty() &&
+      panel.adjusted(-28, -28, 28, 28).contains(cursor) &&
+      other.adjusted(-28, -28, 28, 28).contains(cursor))
+    return;
 
   painter.setPen(QPen(QColor(255, 255, 255, 34), 1));
   painter.setBrush(QColor(13, 15, 20, 224));
   painter.drawRoundedRect(panel, 11, 11);
-  QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
-  font.setPixelSize(11);
   painter.setFont(font);
-  const qreal columnWidth = (panel.width() - 24) / columns;
   for (int index = 0; index < entries.size(); ++index) {
-    const int column = index / rows;
+    const int column = std::min(index / rows, columns - 1);
     const int row = index % rows;
-    const qreal x = panel.left() + 12 + column * columnWidth;
+    qreal x = panel.left() + padding;
+    for (int before = 0; before < column; ++before)
+      x += columnWidth[before] + columnGap;
     const qreal y = panel.top() + 12 + row * 19;
     painter.setPen(QColor(QStringLiteral("#a9b6cb")));
-    painter.drawText(QRectF(x, y, 70, 18), Qt::AlignLeft | Qt::AlignVCenter,
-                     entries.at(index).first);
+    painter.drawText(QRectF(x, y, keyWidth[column], 18),
+                     Qt::AlignLeft | Qt::AlignVCenter, entries.at(index).first);
     painter.setPen(QColor(QStringLiteral("#f5f5f7")));
-    painter.drawText(QRectF(x + 72, y, columnWidth - 76, 18),
-                     Qt::AlignLeft | Qt::AlignVCenter,
-                     entries.at(index).second);
+    painter.drawText(
+        QRectF(x + keyWidth[column] + keyGap, y, textWidth[column], 18),
+        Qt::AlignLeft | Qt::AlignVCenter, entries.at(index).second);
   }
 }
 
