@@ -595,18 +595,25 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
         const int sidePadding = textEditPill_
                                     ? qRound(std::max(4.0, metrics.height() * 0.18))
                                     : 0;
-        const int desiredWidth = std::max(48, widestLine + sidePadding * 2);
-        const int availableWidth =
-            std::max(48, qRound(editImageRect().right() - textEditor_->x()));
-        // QPlainTextEdit needs a little more than QFontMetrics::height(): its
-        // block layout keeps leading/descent outside the nominal line box.
-        // Without that room the first Return scrolls the original line out of
-        // the viewport, making it look as though the text was erased.
-        const int lineCount = std::max(1, static_cast<int>(lines.size()));
-        const int desiredHeight = lineCount * metrics.lineSpacing() +
-                                  metrics.descent() + 4;
-        textEditor_->resize(std::min(desiredWidth, availableWidth),
-                            desiredHeight);
+          const int availableWidth =
+              std::max(48, qRound(editImageRect().right() - textEditor_->x()));
+          // A dragged wrap width wins; otherwise the text wraps at the canvas
+          // edge rather than running off it, where its handle is unreachable.
+          const int desiredWidth =
+              textEditWrapWidth_ > 0.0
+                  ? std::max(48, qRound(textEditWrapWidth_) + sidePadding * 2)
+                  : std::max(48, widestLine + sidePadding * 2);
+          const int width = std::min(desiredWidth, availableWidth);
+          textEditor_->resize(width, textEditor_->height());
+          // QPlainTextEdit needs a little more than QFontMetrics::height(): its
+          // block layout keeps leading/descent outside the nominal line box.
+          // Wrapped lines are not the newline count either, so the laid-out
+          // document is the only thing that knows how tall the draft is now.
+          const int wrapped =
+              std::max(1, qRound(textEditor_->document()->size().height()));
+          const int desiredHeight =
+              wrapped * metrics.lineSpacing() + metrics.descent() + 4;
+          textEditor_->resize(width, desiredHeight);
         textEditor_->verticalScrollBar()->setValue(0);
         QTimer::singleShot(0, textEditor_, [editor = textEditor_] {
           editor->verticalScrollBar()->setValue(0);
@@ -784,7 +791,7 @@ QRectF CaptureEditor::annotationBounds(const Annotation &annotation) const {
             annotation.start.y() - diameter / 2.0, diameter, diameter};
   }
   if (annotation.kind == Annotation::Kind::Text)
-    return annotationTextBounds(annotation);
+    return annotationTextBounds(annotation, selection_.width());
   if (isStrokeKind(annotation.kind)) {
     if (annotation.points.isEmpty())
       return {};
@@ -2447,6 +2454,12 @@ void CaptureEditor::beginText(const QPointF &point, int annotationIndex) {
           : textBackground_;
   const bool pill = background == TextBackground::Pill;
   textEditPill_ = pill;
+  // Re-editing a wrapped layer keeps its width, so the draft breaks
+  // exactly where the committed text did.
+  textEditWrapWidth_ =
+      annotationIndex >= 0 && annotationIndex < annotations_.size()
+          ? annotations_.at(annotationIndex).textWidth
+          : 0.0;
   const int pillPad = pill ? qRound(std::max(4.0, metrics.height() * 0.18)) : 0;
   textEditor_->setStyleSheet(
       QStringLiteral("QPlainTextEdit { color: %1; background: transparent; "
@@ -2478,6 +2491,21 @@ void CaptureEditor::acceptText() {
     annotation.text = text;
     annotation.color = textColor_;
     annotation.size = textSize_;
+    // Text that wrapped at the canvas edge freezes that shape on commit, as
+    // tight as its widest line, so moving the layer later never reflows the
+    // paragraph you just placed. The handle can still re-wrap it.
+    annotation.textWidth = textEditWrapWidth_;
+    if (annotation.textWidth <= 0.0) {
+      const QStringList wrapped =
+          annotationTextLines(annotation, selection_.width());
+      if (wrapped.size() > 1) {
+        const QFontMetricsF metrics(annotationTextFont(annotation.size));
+        qreal widest = 0.0;
+        for (const QString &line : wrapped)
+          widest = std::max(widest, metrics.horizontalAdvance(line));
+        annotation.textWidth = widest + 2.0;
+      }
+    }
     annotation.textBackground =
         editingAnnotation_ >= 0 && editingAnnotation_ < annotations_.size()
             ? annotations_.at(editingAnnotation_).textBackground
@@ -3191,17 +3219,12 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
           annotation.size = std::clamp(
               QLineF(annotation.start, point).length() / 3.0, 2.0, 30.0);
         } else if (annotation.kind == Annotation::Kind::Text) {
+          // The handle sets the wrap width, which is what its horizontal
+          // cursor has always promised. Size belongs to the wheel, so the two
+          // are one gesture each rather than both scaling the layer.
           const QRectF originalBounds = annotationBounds(originalAnnotation_);
-          const qreal ratio =
-              originalBounds.width() > 0
-                  ? std::abs(point.x() - originalBounds.left()) /
-                        originalBounds.width()
-                  : 1.0;
-          annotation.size =
-              std::clamp(originalAnnotation_.size * ratio, 1.0, 24.0);
-          annotation.start.setY(
-              originalBounds.top() +
-              QFontMetricsF(annotationTextFont(annotation.size)).ascent());
+          annotation.textWidth = std::max<qreal>(
+              kMinimumTextWrapWidth, point.x() - originalBounds.left());
         }
       }
       }
@@ -4360,7 +4383,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
                       QRectF(QPointF(), selection_.size()), defaultAnnotations);
   } else {
     for (const Annotation &annotation : defaultAnnotations)
-      paintAnnotation(painter, annotation);
+      paintAnnotation(painter, annotation, selection_.width());
   }
   painter.restore();
   if (tool_ == Tool::Select && marqueeSelecting_ &&

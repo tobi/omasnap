@@ -476,6 +476,9 @@ private:
   /// (the multiline editor stays transparent with its own caret hidden) so the
   /// caret can be shorter than Neucha's tall line box.
   bool textEditPill_ = false;
+  /// Wrap width of the text being typed, in image px; 0 wraps at the canvas
+  /// edge. Carried onto the layer when the text is committed.
+  qreal textEditWrapWidth_ = 0.0;
   bool textCaretOn_ = true;
   QTimer textCaretTimer_;
   QElapsedTimer nudgeTimer_;

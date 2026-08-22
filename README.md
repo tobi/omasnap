@@ -268,7 +268,7 @@ Install the corresponding Tesseract language data before adding a language to
 | `E` | Ellipse; shares the shape submenu and filled/hollow toggle |
 | `D` | Redact; press again to toggle randomized pixelation or solid redaction |
 | `X` | Cut out a band; drag to preview the crossed-out strip, then release to remove and collapse it |
-| `T` | Neucha text on a cream readability pill; Enter adds a line, clicking away keeps the text; press T again to toggle the pill |
+| `T` | Neucha text on a cream readability pill; Enter adds a line, long text wraps at the canvas edge or at a width you drag from its handle, clicking away keeps the text; press T again to toggle the pill |
 | `O` | Recognize and copy all text in the current image |
 | `B` | Cycle backdrop |
 | `1`–`8` | Set annotation color; `7` is black and `8` is white |
