@@ -190,6 +190,10 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
 [[nodiscard]] bool ensurePrivateDirectory(const QString &path);
 /** Returns Omasnap's private runtime directory, or empty on failure. */
 [[nodiscard]] QString secureRuntimeDirectory();
+/** Returns the screenshot output directory without creating it. */
+[[nodiscard]] QString screenshotRootDir();
+/** Returns a timestamped `screenshot-….png` file name. */
+[[nodiscard]] QString defaultScreenshotFileName();
 [[nodiscard]] QString moveSnapshotToScreenshots(const QString &sourcePath,
                                                 QString &error);
 [[nodiscard]] QString temporarySnapshotPath();

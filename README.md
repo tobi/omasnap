@@ -286,6 +286,7 @@ Install the corresponding Tesseract language data before adding a language to
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | `Ctrl+C` | Copy PNG only |
 | `Ctrl+S` | Save PNG only |
+| `Ctrl+Shift+S` | Save As: pick a destination in a file dialog; the editor stays open, and the chosen folder is remembered for the next Save As |
 | `Enter` | Copy and save |
 | `P` | Pin the capture on screen and close the editor |
 | `Esc` | Return to Select; press again to close |
