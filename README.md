@@ -157,6 +157,18 @@ omasnap --capture-window
 omasnap --capture-fullscreen
 ```
 
+Scroll capture stitches a region that is taller (or wider) than the screen:
+
+```bash
+omasnap --scroll
+```
+
+Drag a region, then pick a direction: **Scroll ↓ / →** scrolls the page
+yourself while omasnap captures each step, and **Auto ↓ / →** scrolls it for
+you, one acknowledged notch at a time, stopping when the page stops moving.
+The frames are aligned and stitched into one image and opened in the editor,
+where `Ctrl`+wheel zooms and the wheel scrolls it.
+
 Compatibility positional names are also accepted:
 
 ```bash

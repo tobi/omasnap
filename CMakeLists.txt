@@ -15,6 +15,7 @@ set(PROTOCOL_XMLS
   /usr/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml
   /usr/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml
   /usr/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml
+  ${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-virtual-pointer-unstable-v1.xml
 )
 set(PROTOCOL_SOURCES)
 foreach(PROTOCOL_XML IN LISTS PROTOCOL_XMLS)
@@ -48,9 +49,19 @@ add_library(omasnap-core STATIC
   src/cut.hpp
   src/palette-config.cpp
   src/palette-config.hpp
+  src/overlay-chrome.cpp
+  src/overlay-chrome.hpp
   src/eyedropper.cpp
   src/eyedropper.hpp
   src/surface-capture.cpp
+  src/stitch.cpp
+  src/stitch.hpp
+  src/auto-capture.cpp
+  src/auto-capture.hpp
+  src/scroll-capture.cpp
+  src/scroll-capture.hpp
+  src/scroll-inject.cpp
+  src/scroll-inject.hpp
   ${PROTOCOL_SOURCES}
   src/editor.cpp
   src/editor.hpp
@@ -93,12 +104,24 @@ qt_add_executable(omasnap-smoke
   tests/cut-smoke.hpp
   tests/palette-config-smoke.cpp
   tests/palette-config-smoke.hpp
+  src/cli-path.cpp
+  src/cli-path.hpp
+  src/capture.cpp
+  src/capture.hpp
+  src/overlay-chrome.cpp
+  src/overlay-chrome.hpp
   tests/surface-capture-smoke.cpp
   tests/surface-capture-smoke.hpp
   tests/pin-lifecycle-smoke.cpp
   tests/pin-lifecycle-smoke.hpp
   tests/pin-layout-smoke.cpp
   tests/pin-layout-smoke.hpp
+  src/stitch.cpp
+  src/stitch.hpp
+  src/auto-capture.cpp
+  src/auto-capture.hpp
+  tests/stitch-smoke.cpp
+  tests/stitch-smoke.hpp
 )
 target_include_directories(omasnap-smoke PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
@@ -108,6 +131,18 @@ target_link_libraries(omasnap-smoke PRIVATE omasnap-core Qt6::Test)
 add_test(NAME omasnap-smoke COMMAND omasnap-smoke "${CMAKE_CURRENT_BINARY_DIR}/omasnap-smoke-output")
 set_tests_properties(omasnap-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
+
+qt_add_executable(stitch-replay
+  src/stitch-replay.cpp
+  src/stitch.cpp
+  src/stitch.hpp
+)
+target_include_directories(stitch-replay PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+target_compile_features(stitch-replay PRIVATE cxx_std_23)
+target_compile_options(stitch-replay PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(stitch-replay PRIVATE Qt6::Core Qt6::Gui)
 
 install(TARGETS omasnap
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"

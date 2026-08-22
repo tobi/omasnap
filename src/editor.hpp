@@ -211,6 +211,10 @@ public:
   [[nodiscard]] int selectedCountForTest() const {
     return static_cast<int>(selectedAnnotations_.size());
   }
+  /// Whether the overlay was left by asking for a scroll capture instead:
+  /// the two kinds of capture swap with one key rather than making anyone
+  /// close this and launch the other.
+  [[nodiscard]] bool switchedToScroll() const { return switchedToScroll_; }
   /// Current status line. Test accessor.
   [[nodiscard]] QString statusForTest() const { return status_; }
   /// Whether the selection chrome is currently stepped back for an adjustment.
@@ -300,6 +304,9 @@ private:
   void duplicateSelectedAnnotation();
   [[nodiscard]] EditState editState() const;
   void enterEdit(QString status);
+public:
+
+private:
   void scheduleSnapshot();
   void startSnapshotRender();
   void pinSnapshot();
@@ -354,6 +361,7 @@ private:
   /// What to hand back to once a color has been sampled: taking a color is
   /// not a change of tool.
   Tool toolBeforeEyedropper_ = Tool::Select;
+  bool switchedToScroll_ = false;
   QRectF selection_;
   QPointF dragStart_;
   QRectF originalSelection_;

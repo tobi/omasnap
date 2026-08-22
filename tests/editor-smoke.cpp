@@ -8,6 +8,8 @@
 #include "instance-lock-smoke.hpp"
 #include "palette-config-smoke.hpp"
 #include "pin-layout-smoke.hpp"
+#include "stitch-smoke.hpp"
+#include "stitch.hpp"
 #include "pin-lifecycle-smoke.hpp"
 #include "transform-smoke.hpp"
 #include "eyedropper.hpp"
@@ -4711,6 +4713,47 @@ int main(int argc, char **argv) {
   QApplication application(argc, argv);
   if (!loadCaptureFonts())
     return 17;
+
+  // Live output capture against a real compositor (the smoke's own Wayland
+  // connection; Qt's platform does not matter): open a session on the named
+  // output and grab several frames through the same buffer, timing them,
+  // since scroll capture needs many per second.
+  const QString liveOutputName = qEnvironmentVariable("OMASNAP_SMOKE_OUTPUT");
+  if (!liveOutputName.isEmpty()) {
+    OutputCapture output;
+    QString outputError;
+    if (!output.open(liveOutputName, outputError)) {
+      qWarning().noquote() << outputError;
+      return 105;
+    }
+    QImage frame;
+    QElapsedTimer stopwatch;
+    for (int index = 0; index < 5; ++index) {
+      stopwatch.start();
+      if (!output.grab(frame, outputError)) {
+        qWarning().noquote() << outputError;
+        return 105;
+      }
+      if (frame.isNull() || frame.size() != output.bufferSize()) {
+        qWarning().noquote() << QStringLiteral(
+            "Output frame size does not match the announced buffer");
+        return 105;
+      }
+      qInfo().noquote() << QStringLiteral("output %1 frame %2: %3x%4 in %5 ms")
+                               .arg(liveOutputName)
+                               .arg(index + 1)
+                               .arg(frame.width())
+                               .arg(frame.height())
+                               .arg(stopwatch.elapsed());
+    }
+    const QString liveRoot =
+        argc > 1 ? QString::fromLocal8Bit(argv[1])
+                 : QDir(QDir::tempPath())
+                       .filePath(QStringLiteral("omasnap-native-smoke"));
+    if (!frame.save(liveRoot + QStringLiteral("-native-output.png"), "PNG"))
+      return 105;
+    return 0;
+  }
   QString snapshotError;
   if (!runPositionalImageTargetCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
@@ -4810,6 +4853,30 @@ int main(int argc, char **argv) {
           << QStringLiteral("A horizontal notch stepped only one way: up=") +
                  up + QStringLiteral(" down=") + down;
       return 116;
+    }
+    editor.close();
+  }
+  {
+    // A capture past the advisory edge still opens and edits; the only
+    // difference is that it says so.
+    CaptureData tall;
+    tall.monitor.name = QStringLiteral("TEST");
+    tall.monitor.scale = 1.0;
+    tall.monitor.pixelSize = {8, stitch::kWidelyOpenableEdge + 2};
+    tall.source = QImage(8, stitch::kWidelyOpenableEdge + 2,
+                         QImage::Format_ARGB32_Premultiplied);
+    tall.source.fill(QColor(QStringLiteral("#203040")));
+    tall.previewSize = tall.source.size();
+    CaptureEditor editor(std::move(tall), CaptureEditor::CaptureMode::File);
+    editor.resize(400, 300);
+    editor.show();
+    application.processEvents();
+    if (!editor.statusForTest().contains(QStringLiteral("Very long capture")) ||
+        !editor.statusForTest().contains(QStringLiteral("edits and saves"))) {
+      qWarning().noquote()
+          << QStringLiteral("Oversized capture did not explain itself: ")
+          << editor.statusForTest();
+      return 112;
     }
     editor.close();
   }
@@ -4981,6 +5048,10 @@ int main(int argc, char **argv) {
       return 115;
     }
     editor.close();
+  }
+  if (!runStitchChecks()) {
+    qWarning().noquote() << QStringLiteral("Stitcher checks failed");
+    return 104;
   }
   if (!runSpotlightWheelSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

@@ -4,6 +4,7 @@
 #include "cut.hpp"
 
 #include <cstdint>
+#include <memory>
 
 #include <QPainterPath>
 #include <QColor>
@@ -134,6 +135,37 @@ enum class AnnotationLayer { Redaction, Default };
  *  has one; `start` is the baseline origin. */
 [[nodiscard]] QRectF annotationTextBounds(const Annotation &annotation);
 /** Captures the named output through ext-image-copy-capture. */
+/** A live native capture session for one output (`MonitorInfo::name`, e.g.
+ *  "DP-3") over its own Wayland connection: open once, then grab frames
+ *  repeatedly into the same buffer: a scroll capture takes many per second
+ *  and must not pay a process spawn or a session handshake for each. Frames
+ *  are captured without the cursor and returned upright in output pixels. */
+class OutputCapture {
+public:
+  OutputCapture();
+  ~OutputCapture();
+  OutputCapture(const OutputCapture &) = delete;
+  OutputCapture &operator=(const OutputCapture &) = delete;
+  [[nodiscard]] bool open(const QString &outputName, QString &error);
+  /// Grab the next frame. `timeoutMs` bounds the wait for the compositor to
+  /// deliver damage (a fully static output would otherwise block up to 2 s).
+  /// Returns false on timeout as well as on real failures, and `error` is set
+  /// either way; poll sessionStopped() to tell a dead session from a quiet
+  /// screen and simply retry the rest.
+  [[nodiscard]] bool grab(QImage &image, QString &error, int timeoutMs = 2000);
+  [[nodiscard]] bool isOpen() const;
+  /// True once the compositor has stopped the session (output gone, mode
+  /// change it will not resume from); further grabs cannot succeed.
+  [[nodiscard]] bool sessionStopped() const;
+  /** Pixel size the compositor announced for frames (empty until open). */
+  [[nodiscard]] QSize bufferSize() const;
+  void close();
+
+private:
+  struct State;
+  std::unique_ptr<State> state_;
+};
+
 [[nodiscard]] bool captureOutputSurface(const MonitorInfo &monitor,
                                         QImage &image, QString &error);
 [[nodiscard]] QString operationLogPath(const QString &imagePath);

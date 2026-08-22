@@ -6,6 +6,8 @@
 
 #include <LayerShellQt/Window>
 
+#include "scroll-capture.hpp"
+
 #include <QImageReader>
 #include <QApplication>
 #include <QCommandLineOption>
@@ -156,6 +158,11 @@ int main(int argc, char **argv) {
       QStringLiteral("Show an image as a pinned always-visible layer."),
       QStringLiteral("path"));
   parser.addOption(pinOption);
+  const QCommandLineOption scrollOption(
+      QStringLiteral("scroll"),
+      QStringLiteral("Capture a scrolling region and stitch it into one tall "
+                     "image, then open it in the editor."));
+  parser.addOption(scrollOption);
   parser.addPositionalArgument(
       QStringLiteral("target"),
       QStringLiteral("Capture mode (smart, region, windows, fullscreen) or the "
@@ -269,6 +276,39 @@ int main(int argc, char **argv) {
   CaptureData capture;
   OperationLog restoredLog;
   QString error;
+  bool scrollRequested = parser.isSet(scrollOption);
+  if (scrollRequested) {
+    // Learn the focused monitor (name and scale) for the output-capture
+    // session, run the overlay, then edit the stitched result. Leaving the
+    // overlay with A asks for an ordinary area capture instead, so the two
+    // kinds swap without anyone having to close one and launch the other.
+    CaptureData probe;
+    if (!captureFocusedMonitor(probe, false, error)) {
+      qCritical().noquote() << error;
+      return 1;
+    }
+    bool switchedToArea = false;
+    const QImage stitched =
+        runScrollCapture(probe.monitor, error, &switchedToArea);
+    if (switchedToArea) {
+      scrollRequested = false;
+      captureMode = CaptureEditor::CaptureMode::Region;
+    } else if (stitched.isNull()) {
+      if (!error.isEmpty()) {
+        qCritical().noquote() << error;
+        return 1;
+      }
+      return 0; // cancelled
+    } else {
+      capture.source = stitched;
+      capture.previewSize = stitched.size();
+      capture.monitor.scale = 1.0;
+      capture.monitor.pixelSize = stitched.size();
+      capture.monitor.geometry = QRect(QPoint(0, 0), stitched.size());
+      capture.monitor.name = probe.monitor.name;
+      captureMode = CaptureEditor::CaptureMode::File;
+    }
+  }
   if (editingImage) {
     QImage image;
     QString inputName;
@@ -310,7 +350,8 @@ int main(int argc, char **argv) {
                              .arg(inputName)
                              .arg(image.width())
                              .arg(image.height());
-  } else if (!probeFocusedMonitor(capture.monitor, error)) {
+  } else if (!scrollRequested &&
+             !probeFocusedMonitor(capture.monitor, error)) {
     qCritical().noquote() << error;
     sendCaptureNotification(QStringLiteral("Screenshot failed: %1").arg(error));
     return 1;
@@ -321,7 +362,7 @@ int main(int argc, char **argv) {
   const bool instantFullscreenOutput =
       !editingImage && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
       quickOutputMode != QuickOutputMode::None;
-  if (!editingImage &&
+  if (!editingImage && !scrollRequested &&
       !captureMonitorPixels(capture.monitor, capture,
                             !instantFullscreenOutput, error)) {
     qCritical().noquote() << error;
@@ -364,32 +405,78 @@ int main(int argc, char **argv) {
                              .arg(capture.windows.size());
   }
 
-  CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
-                       restoredLog);
-  editor.setScreen(targetScreen);
-  editor.setGeometry(targetScreen->geometry());
-  editor.winId();
-  QWindow *window = editor.windowHandle();
-  LayerShellQt::Window *layerWindow = LayerShellQt::Window::get(window);
-  if (!window || !layerWindow) {
-    qCritical() << "Could not create capture overlay layer";
-    return 1;
-  }
-  layerWindow->setScope(QStringLiteral("omasnap"));
-  layerWindow->setScreen(targetScreen);
-  layerWindow->setLayer(LayerShellQt::Window::LayerOverlay);
-  LayerShellQt::Window::Anchors anchors;
-  anchors.setFlag(LayerShellQt::Window::AnchorTop);
-  anchors.setFlag(LayerShellQt::Window::AnchorBottom);
-  anchors.setFlag(LayerShellQt::Window::AnchorLeft);
-  anchors.setFlag(LayerShellQt::Window::AnchorRight);
-  layerWindow->setAnchors(anchors);
-  layerWindow->setExclusiveZone(-1);
-  layerWindow->setKeyboardInteractivity(
-      LayerShellQt::Window::KeyboardInteractivityExclusive);
-  layerWindow->setActivateOnShow(true);
-  editor.show();
-  editor.setFocus(Qt::ActiveWindowFocusReason);
+  // Area capture and scroll capture hand back and forth with one key, so the
+  // session is a loop rather than a sequence: each overlay runs to completion,
+  // says whether it handed over, and the other one takes it from there. As
+  // many times as anyone likes.
+  for (;;) {
+    CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
+                         restoredLog);
+    editor.setScreen(targetScreen);
+    editor.setGeometry(targetScreen->geometry());
+    editor.winId();
+    QWindow *window = editor.windowHandle();
+    LayerShellQt::Window *layerWindow = LayerShellQt::Window::get(window);
+    if (!window || !layerWindow) {
+      qCritical() << "Could not create capture overlay layer";
+      return 1;
+    }
+    layerWindow->setScope(QStringLiteral("omasnap"));
+    layerWindow->setScreen(targetScreen);
+    layerWindow->setLayer(LayerShellQt::Window::LayerOverlay);
+    LayerShellQt::Window::Anchors anchors;
+    anchors.setFlag(LayerShellQt::Window::AnchorTop);
+    anchors.setFlag(LayerShellQt::Window::AnchorBottom);
+    anchors.setFlag(LayerShellQt::Window::AnchorLeft);
+    anchors.setFlag(LayerShellQt::Window::AnchorRight);
+    layerWindow->setAnchors(anchors);
+    layerWindow->setExclusiveZone(-1);
+    layerWindow->setKeyboardInteractivity(
+        LayerShellQt::Window::KeyboardInteractivityExclusive);
+    layerWindow->setActivateOnShow(true);
+    editor.show();
+    editor.setFocus(Qt::ActiveWindowFocusReason);
 
-  return application.exec();
+    const int status = application.exec();
+    if (!editor.switchedToScroll())
+      return status;
+
+    // S handed this over to scroll capture. Run it on the same monitor; A
+    // there hands it straight back, which is why this is a loop. Whatever op
+    // log a file edit restored belongs to that file, not to the next capture.
+    restoredLog = OperationLog();
+    CaptureData probe;
+    if (!captureFocusedMonitor(probe, false, error)) {
+      qCritical().noquote() << error;
+      return 1;
+    }
+    bool backToArea = false;
+    const QImage stitched = runScrollCapture(probe.monitor, error, &backToArea);
+    if (backToArea) {
+      // Handed straight back: the loop puts the area overlay up again, and A
+      // and S can keep passing it between them for as long as anyone likes.
+      capture = CaptureData();
+      if (!captureMonitorPixels(probe.monitor, capture, true, error)) {
+        qCritical().noquote() << error;
+        return 1;
+      }
+      captureMode = CaptureEditor::CaptureMode::Region;
+      continue;
+    }
+    if (stitched.isNull()) {
+      if (!error.isEmpty()) {
+        qCritical().noquote() << error;
+        return 1;
+      }
+      return 0; // cancelled
+    }
+    capture = CaptureData();
+    capture.source = stitched;
+    capture.previewSize = stitched.size();
+    capture.monitor.scale = 1.0;
+    capture.monitor.pixelSize = stitched.size();
+    capture.monitor.geometry = QRect(QPoint(0, 0), stitched.size());
+    capture.monitor.name = probe.monitor.name;
+    captureMode = CaptureEditor::CaptureMode::File;
+  }
 }

@@ -23,7 +23,9 @@
 #include <unistd.h>
 #include <vector>
 
-namespace {
+// Named (not anonymous) so OutputCapture::State can derive from it without
+// giving an exported type internal-linkage members.
+namespace capture_detail {
 struct OutputInfo {
   wl_output *output = nullptr;
   std::string name;
@@ -45,11 +47,23 @@ struct CaptureState {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t format = 0;
+  /// Geometry/format the current shm buffer was actually created with. The
+  /// session can re-announce width/height/formats at any dispatch (mode or
+  /// scale change), even in the same batch as a frame's ready event, so
+  /// everything that touches the mapped buffer must use these, not the live
+  /// session values above.
+  uint32_t bufferWidth = 0;
+  uint32_t bufferHeight = 0;
+  uint32_t bufferFormat = 0;
   uint32_t transform = WL_OUTPUT_TRANSFORM_NORMAL;
   bool constraintsDone = false;
+  /// Set when the session re-announces its constraints (buffer_size after the
+  /// first done); the next frame needs a fresh buffer.
+  bool constraintsChanged = false;
   bool stopped = false;
   bool frameDone = false;
   bool frameReady = false;
+  uint32_t failureReason = 0;
   int fd = -1;
   void *memory = MAP_FAILED;
   std::size_t memorySize = 0;
@@ -139,12 +153,22 @@ constexpr wl_registry_listener kRegistryListener{registryGlobal,
 void sessionBufferSize(void *data, ext_image_copy_capture_session_v1 *,
                        uint32_t width, uint32_t height) {
   auto &state = *static_cast<CaptureState *>(data);
+  if (state.constraintsDone &&
+      (width != state.width || height != state.height)) {
+    state.constraintsChanged = true;
+    // A re-announcement replaces the constraint set; drop the old formats so
+    // the rebuild chooses from the current ones.
+    state.shmFormats.clear();
+  }
   state.width = width;
   state.height = height;
 }
 void sessionShmFormat(void *data, ext_image_copy_capture_session_v1 *,
                       uint32_t format) {
-  static_cast<CaptureState *>(data)->shmFormats.push_back(format);
+  auto &state = *static_cast<CaptureState *>(data);
+  if (state.constraintsDone)
+    state.constraintsChanged = true;
+  state.shmFormats.push_back(format);
 }
 void sessionDmabufDevice(void *, ext_image_copy_capture_session_v1 *,
                          wl_array *) {}
@@ -176,8 +200,11 @@ void frameReady(void *data, ext_image_copy_capture_frame_v1 *) {
   state.frameReady = true;
   state.frameDone = true;
 }
-void frameFailed(void *data, ext_image_copy_capture_frame_v1 *, uint32_t) {
-  static_cast<CaptureState *>(data)->frameDone = true;
+void frameFailed(void *data, ext_image_copy_capture_frame_v1 *,
+                 uint32_t reason) {
+  auto &state = *static_cast<CaptureState *>(data);
+  state.failureReason = reason;
+  state.frameDone = true;
 }
 constexpr ext_image_copy_capture_frame_v1_listener kFrameListener{
     frameTransform, frameDamage, framePresentation, frameReady, frameFailed};
@@ -250,8 +277,12 @@ bool createShmBuffer(CaptureState &state, QString &error) {
     return false;
   }
 
-  const std::size_t stride = static_cast<std::size_t>(state.width) * 4;
-  state.memorySize = stride * state.height;
+  state.bufferWidth = state.width;
+  state.bufferHeight = state.height;
+  state.bufferFormat = state.format;
+
+  const std::size_t stride = static_cast<std::size_t>(state.bufferWidth) * 4;
+  state.memorySize = stride * state.bufferHeight;
   if (state.memorySize >
       static_cast<std::size_t>(std::numeric_limits<int32_t>::max())) {
     error = QStringLiteral("Surface capture buffer is too large");
@@ -285,9 +316,9 @@ bool createShmBuffer(CaptureState &state, QString &error) {
     return false;
   }
   state.buffer = wl_shm_pool_create_buffer(
-      state.pool, 0, static_cast<int32_t>(state.width),
-      static_cast<int32_t>(state.height), static_cast<int32_t>(stride),
-      state.format);
+      state.pool, 0, static_cast<int32_t>(state.bufferWidth),
+      static_cast<int32_t>(state.bufferHeight), static_cast<int32_t>(stride),
+      state.bufferFormat);
   if (!state.buffer) {
     error = QStringLiteral("Could not create Wayland surface capture buffer");
     return false;
@@ -295,9 +326,50 @@ bool createShmBuffer(CaptureState &state, QString &error) {
   return true;
 }
 
+/** Releases the shm buffer so createShmBuffer() can size a new one. */
+void destroyShmBuffer(CaptureState &state) {
+  if (state.buffer)
+    wl_buffer_destroy(state.buffer);
+  if (state.pool)
+    wl_shm_pool_destroy(state.pool);
+  if (state.memory != MAP_FAILED)
+    munmap(state.memory, state.memorySize);
+  if (state.fd >= 0)
+    close(state.fd);
+  state.buffer = nullptr;
+  state.pool = nullptr;
+  state.memory = MAP_FAILED;
+  state.memorySize = 0;
+  state.fd = -1;
+}
+
+/** Captures one frame from the open session into the shm buffer. */
+bool captureFrame(CaptureState &state, QString &error, int timeoutMs) {
+  if (!state.buffer) {
+    error = QStringLiteral("No capture buffer is available");
+    return false;
+  }
+  state.frameDone = false;
+  state.frameReady = false;
+  state.failureReason = 0;
+  state.transform = WL_OUTPUT_TRANSFORM_NORMAL;
+  state.frame = ext_image_copy_capture_session_v1_create_frame(state.session);
+  ext_image_copy_capture_frame_v1_add_listener(state.frame, &kFrameListener,
+                                               &state);
+  ext_image_copy_capture_frame_v1_attach_buffer(state.frame, state.buffer);
+  ext_image_copy_capture_frame_v1_damage_buffer(
+      state.frame, 0, 0, static_cast<int32_t>(state.bufferWidth),
+      static_cast<int32_t>(state.bufferHeight));
+  ext_image_copy_capture_frame_v1_capture(state.frame);
+  const bool done = dispatchUntil(state, &state.frameDone, timeoutMs, error);
+  ext_image_copy_capture_frame_v1_destroy(state.frame);
+  state.frame = nullptr;
+  return done && state.frameReady;
+}
+
 QImage copyCapturedImage(const CaptureState &state) {
   QImage::Format imageFormat = QImage::Format_Invalid;
-  switch (state.format) {
+  switch (state.bufferFormat) {
   case WL_SHM_FORMAT_ARGB8888:
     imageFormat = QImage::Format_ARGB32_Premultiplied;
     break;
@@ -313,13 +385,15 @@ QImage copyCapturedImage(const CaptureState &state) {
   default:
     return {};
   }
-  const int stride = static_cast<int>(state.width * 4);
+  const int stride = static_cast<int>(state.bufferWidth * 4);
   return QImage(static_cast<uchar *>(state.memory),
-                static_cast<int>(state.width), static_cast<int>(state.height),
-                stride, imageFormat)
+                static_cast<int>(state.bufferWidth),
+                static_cast<int>(state.bufferHeight), stride, imageFormat)
       .copy();
 }
-} // namespace
+} // namespace capture_detail
+
+using namespace capture_detail;
 
 QImage normalizeWaylandCapture(const QImage &image, std::uint32_t transform) {
   const auto rotated = [&image](qreal degrees) {
@@ -350,11 +424,11 @@ QImage normalizeWaylandCapture(const QImage &image, std::uint32_t transform) {
   }
 }
 
-static bool captureCurrentSource(CaptureState &state, QImage &image, QString &error,
-                          const QString &stoppedError,
-                          const QString &failedError,
-                          const QString &decodeError,
-                          const QString &transformError) {
+/** Opens the copy-capture session on `state.source` and sizes its buffer.
+ *  Frames are captured without the cursor: scroll-capture frames are
+ *  stitched, and a painted cursor would become a moving artefact. */
+static bool openCaptureSession(CaptureState &state, QString &error,
+                               const QString &stoppedError) {
   state.session = ext_image_copy_capture_manager_v1_create_session(
       state.captureManager, state.source, 0);
   ext_image_copy_capture_session_v1_add_listener(state.session,
@@ -365,20 +439,20 @@ static bool captureCurrentSource(CaptureState &state, QImage &image, QString &er
     error = stoppedError;
     return false;
   }
-  if (!createShmBuffer(state, error))
-    return false;
+  return createShmBuffer(state, error);
+}
 
-  state.frame = ext_image_copy_capture_session_v1_create_frame(state.session);
-  ext_image_copy_capture_frame_v1_add_listener(state.frame, &kFrameListener,
-                                               &state);
-  ext_image_copy_capture_frame_v1_attach_buffer(state.frame, state.buffer);
-  ext_image_copy_capture_frame_v1_damage_buffer(
-      state.frame, 0, 0, static_cast<int32_t>(state.width),
-      static_cast<int32_t>(state.height));
-  ext_image_copy_capture_frame_v1_capture(state.frame);
-  if (!dispatchUntil(state, &state.frameDone, 2000, error) ||
-      !state.frameReady) {
-    if (error.isEmpty())
+static bool captureCurrentSource(CaptureState &state, QImage &image, QString &error,
+                          const QString &stoppedError,
+                          const QString &failedError,
+                          const QString &decodeError,
+                          const QString &transformError) {
+  if (!openCaptureSession(state, error, stoppedError))
+    return false;
+  if (!captureFrame(state, error, 2000)) {
+    if (state.stopped)
+      error = stoppedError;
+    else if (error.isEmpty())
       error = failedError;
     return false;
   }
@@ -395,14 +469,8 @@ static bool captureCurrentSource(CaptureState &state, QImage &image, QString &er
   return true;
 }
 
-bool captureOutputSurface(const MonitorInfo &monitor, QImage &image,
-                          QString &error) {
-  if (monitor.name.isEmpty()) {
-    error = QStringLiteral("Focused monitor has no output name");
-    return false;
-  }
-
-  CaptureState state;
+/** Connects to the display and binds the output-capture globals. */
+static bool connectOutputCaptureDisplay(CaptureState &state, QString &error) {
   state.display = wl_display_connect(nullptr);
   if (!state.display) {
     error = QStringLiteral("Could not connect to Wayland for output capture");
@@ -420,6 +488,19 @@ bool captureOutputSurface(const MonitorInfo &monitor, QImage &image,
         "Compositor does not expose ext-image-copy-capture output capture");
     return false;
   }
+  return true;
+}
+
+bool captureOutputSurface(const MonitorInfo &monitor, QImage &image,
+                          QString &error) {
+  if (monitor.name.isEmpty()) {
+    error = QStringLiteral("Focused monitor has no output name");
+    return false;
+  }
+
+  CaptureState state;
+  if (!connectOutputCaptureDisplay(state, error))
+    return false;
 
   const auto match =
       std::ranges::find_if(state.outputs, [&](const auto &output) {
@@ -440,3 +521,100 @@ bool captureOutputSurface(const MonitorInfo &monitor, QImage &image,
       QStringLiteral("Could not decode native output capture"),
       QStringLiteral("Unsupported transform in native output capture"));
 }
+
+struct OutputCapture::State : capture_detail::CaptureState {};
+
+OutputCapture::OutputCapture() = default;
+OutputCapture::~OutputCapture() = default;
+
+bool OutputCapture::open(const QString &outputName, QString &error) {
+  close();
+  auto state = std::make_unique<State>();
+  if (!connectOutputCaptureDisplay(*state, error))
+    return false;
+  const std::string wanted = outputName.toStdString();
+  const auto match =
+      std::ranges::find_if(state->outputs, [&](const auto &output) {
+        return output->name == wanted;
+      });
+  if (match == state->outputs.end()) {
+    error = QStringLiteral("Output %1 is not available for native capture")
+                .arg(outputName);
+    return false;
+  }
+  state->source = ext_output_image_capture_source_manager_v1_create_source(
+      state->outputSourceManager, (*match)->output);
+  if (!openCaptureSession(
+          *state, error,
+          QStringLiteral("Compositor stopped native output capture")))
+    return false;
+  state_ = std::move(state);
+  return true;
+}
+
+bool OutputCapture::grab(QImage &image, QString &error, int timeoutMs) {
+  if (!state_) {
+    error = QStringLiteral("Output capture is not open");
+    return false;
+  }
+  State &state = *state_;
+  // The buffer is reused frame after frame; only a constraint change (mode or
+  // format switch, announced by the session or reported by a failed frame)
+  // sizes a new one.
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    if (state.constraintsChanged) {
+      state.constraintsChanged = false;
+      destroyShmBuffer(state);
+      if (!createShmBuffer(state, error)) {
+        // The next grab must retry the rebuild; without this it would attach
+        // a null buffer.
+        state.constraintsChanged = true;
+        return false;
+      }
+    }
+    if (captureFrame(state, error, timeoutMs))
+      break;
+    if (state.stopped) {
+      error = QStringLiteral("Compositor stopped native output capture");
+      return false;
+    }
+    if (state.failureReason ==
+            EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS &&
+        attempt == 0) {
+      state.constraintsChanged = true;
+      continue;
+    }
+    if (error.isEmpty())
+      error = QStringLiteral("Compositor could not capture the output");
+    return false;
+  }
+  if (!state.frameReady) {
+    if (error.isEmpty())
+      error = QStringLiteral("Compositor could not capture the output");
+    return false;
+  }
+  const QImage captured = copyCapturedImage(state);
+  if (captured.isNull()) {
+    error = QStringLiteral("Could not decode native output capture");
+    return false;
+  }
+  image = normalizeWaylandCapture(captured, state.transform);
+  if (image.isNull()) {
+    error = QStringLiteral("Unsupported transform in native output capture");
+    return false;
+  }
+  return true;
+}
+
+bool OutputCapture::isOpen() const { return state_ != nullptr; }
+
+bool OutputCapture::sessionStopped() const { return state_ && state_->stopped; }
+
+QSize OutputCapture::bufferSize() const {
+  if (!state_)
+    return {};
+  return {static_cast<int>(state_->bufferWidth),
+          static_cast<int>(state_->bufferHeight)};
+}
+
+void OutputCapture::close() { state_.reset(); }
