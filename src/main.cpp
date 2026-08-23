@@ -413,8 +413,15 @@ int main(int argc, char **argv) {
                              .arg(capture.windows.size());
   }
 
+  CaptureEditor::PostCaptureHandler postCaptureHandler;
+  if (!editingImage && quickOutputMode == QuickOutputMode::None) {
+    const QString screenName = capture.monitor.name;
+    postCaptureHandler = [screenName](const QImage &image, QString &outputError) {
+      return queueCaptureOnShelf(image, screenName, outputError);
+    };
+  }
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
-                       restoredLog);
+                       restoredLog, std::move(postCaptureHandler));
   startupTimingMark("CaptureEditor constructed");
   editor.setScreen(targetScreen);
   editor.setGeometry(targetScreen->geometry());

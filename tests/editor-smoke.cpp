@@ -7371,6 +7371,38 @@ bool runAreaLastRegionSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+bool runPostCaptureHandoffSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = QRect(0, 0, 200, 150);
+  capture.monitor.pixelSize = QSize(200, 150);
+  capture.monitor.scale = 1.0;
+  capture.previewSize = QSize(200, 150);
+  capture.source = QImage(200, 150, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#365070")));
+
+  QImage handedOff;
+  CaptureEditor editor(
+      capture, CaptureEditor::CaptureMode::Region, QuickOutputMode::None, {},
+      [&handedOff](const QImage &image, QString &) {
+        handedOff = image;
+        return true;
+      });
+  editor.resize(capture.previewSize);
+  editor.show();
+  application.processEvents();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(20, 30));
+  QTest::mouseMove(&editor, QPoint(140, 100), 10);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(140, 100));
+  application.processEvents();
+  if (handedOff.size() != QSize(120, 70) || editor.isVisible()) {
+    error = QStringLiteral("Post-capture handoff did not receive the region");
+    return false;
+  }
+  return true;
+}
+
 int main(int argc, char **argv) {
   // Re-executed by the instance-lock checks as the process holding the lock.
   const QString heldLockPath =
@@ -7430,6 +7462,10 @@ int main(int argc, char **argv) {
     return 0;
   }
   QString snapshotError;
+  if (!runPostCaptureHandoffSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 125;
+  }
   if (!runAreaLastRegionSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 119;

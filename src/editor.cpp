@@ -629,9 +629,11 @@ QPointF centeredCreationStart(CaptureEditor::Tool tool, const QPointF &center,
 
 CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
                              QuickOutputMode quickOutput, OperationLog log,
+                             PostCaptureHandler postCaptureHandler,
                              QWidget *parent)
     : QWidget(parent), capture_(std::move(capture)),
-      quickOutputMode_(quickOutput) {
+      quickOutputMode_(quickOutput),
+      postCaptureHandler_(std::move(postCaptureHandler)) {
   startupTimingMark("CaptureEditor constructor entered");
   pristineSource_ = capture_.source;
   pristineLogicalSize_ = capture_.previewSize;
@@ -862,10 +864,15 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
             ? QStringLiteral("Editing image from file · Copy/Save to output")
             : QStringLiteral("Full screen selected · native resolution · "
                              "outer handles crop");
-    if (mode == CaptureMode::File)
+    if (mode == CaptureMode::File) {
       enterEdit(editStatus);
-    else
+    } else if (postCaptureHandler_) {
+      QTimer::singleShot(0, this, [this, editStatus] {
+        enterSelectedCapture(editStatus);
+      });
+    } else {
       enterSelectedCapture(editStatus);
+    }
   } else if (mode == CaptureMode::Window) {
     windowMode_ = true;
     hoveredWindow_ = windowAt(cursor_);
@@ -2922,6 +2929,22 @@ void CaptureEditor::enterSelectedCapture(QString editStatus) {
       return;
     }
     enterExport();
+    return;
+  }
+  // A fresh capture with somewhere to go does not open the editor: it is
+  // handed off and the window closes. An explicit --copy/--save above still
+  // wins, and a file opened for editing never reaches here.
+  if (postCaptureHandler_) {
+    const QImage image = renderCurrentOutput();
+    QString error;
+    if (image.isNull() || !postCaptureHandler_(image, error)) {
+      setStatus(error.isEmpty()
+                    ? QStringLiteral("Could not add capture to Shelf")
+                    : error);
+      update();
+      return;
+    }
+    close();
     return;
   }
   enterEdit(std::move(editStatus));

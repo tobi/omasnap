@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <functional>
 #include <optional>
 
 class QKeyEvent;
@@ -44,11 +45,14 @@ class CaptureEditor final : public QWidget {
   Q_OBJECT
 public:
   enum class CaptureMode { Region, Scroll, Window, Fullscreen, File };
+  using PostCaptureHandler =
+      std::function<bool(const QImage &image, QString &error)>;
 
   explicit CaptureEditor(CaptureData capture,
                          CaptureMode mode = CaptureMode::Region,
                          QuickOutputMode quickOutput = QuickOutputMode::None,
                          OperationLog log = {},
+                         PostCaptureHandler postCaptureHandler = {},
                          QWidget *parent = nullptr);
   ~CaptureEditor() override;
 
@@ -760,6 +764,7 @@ private:
   bool dragChanged_ = false;
   QString snapshotPath_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
+  PostCaptureHandler postCaptureHandler_;
   int pinCount_ = 0;
   QString status_ =
       QStringLiteral("Drag to select an area · Space selects a window");

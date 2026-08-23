@@ -1399,6 +1399,13 @@ QString temporarySnapshotPath() {
                          .arg(nonce, 8, 16, QChar('0')));
 }
 
+QString shelfSnapshotPath() {
+  return runtimePath(QStringLiteral("shelf-%1-%2.png")
+                         .arg(QCoreApplication::applicationPid())
+                         .arg(QRandomGenerator::global()->generate64(), 16, 16,
+                              QChar('0')));
+}
+
 QString temporaryExportPath() {
   return runtimePath(QStringLiteral("export-%1-%2.png")
                          .arg(QCoreApplication::applicationPid())

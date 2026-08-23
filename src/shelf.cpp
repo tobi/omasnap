@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QEnterEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
@@ -20,6 +21,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QProcess>
 #include <QScreen>
 #include <QWidget>
 #include <QWindow>
@@ -320,6 +322,23 @@ private:
 };
 
 } // namespace
+
+bool queueCaptureOnShelf(const QImage &image, const QString &screenName,
+                         QString &error) {
+  const QString path = shelfSnapshotPath();
+  if (path.isEmpty() || !saveTemporarySnapshot(image, path, error, -1))
+    return false;
+  QStringList arguments{QStringLiteral("--shelf"), path};
+  if (!screenName.isEmpty())
+    arguments << QStringLiteral("--shelf-screen") << screenName;
+  if (!QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                               arguments)) {
+    QFile::remove(path);
+    error = QStringLiteral("Could not start the capture Shelf");
+    return false;
+  }
+  return true;
+}
 
 int runCaptureShelf(const QString &path, const QString &screenName) {
   const ShelfRequest request{QFileInfo(path).absoluteFilePath(), screenName};
