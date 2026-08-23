@@ -168,11 +168,7 @@ QString runtimePath(const QString &name) {
 }
 
 QString screenshotTargetPath(QString &error) {
-  QString root = qEnvironmentVariable("OMASNAP_SCREENSHOT_DIR");
-  if (root.isEmpty())
-    root =
-        QDir(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation))
-            .filePath(QStringLiteral("Screenshots"));
+  const QString root = screenshotRootDir();
   if (!QDir().mkpath(root)) {
     error =
         QStringLiteral("Could not create screenshot directory: %1").arg(root);
@@ -1042,6 +1038,21 @@ bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
     sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));
   }
   return true;
+}
+
+QString screenshotRootDir() {
+  QString root = qEnvironmentVariable("OMASNAP_SCREENSHOT_DIR");
+  if (root.isEmpty())
+    root =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation))
+            .filePath(QStringLiteral("Screenshots"));
+  return root;
+}
+
+QString defaultScreenshotFileName() {
+  return QStringLiteral("screenshot-%1.png")
+      .arg(QDateTime::currentDateTime().toString(
+          QStringLiteral("yyyy-MM-dd_HH-mm-ss")));
 }
 
 QString moveSnapshotToScreenshots(const QString &sourcePath, QString &error) {
