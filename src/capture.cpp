@@ -1406,6 +1406,15 @@ QString shelfSnapshotPath() {
                               QChar('0')));
 }
 
+bool isShelfSnapshotPath(const QString &path) {
+  const QString runtime = secureRuntimeDirectory();
+  const QFileInfo info(path);
+  return !runtime.isEmpty() &&
+         QDir::cleanPath(info.absolutePath()) == QDir::cleanPath(runtime) &&
+         info.fileName().startsWith(QStringLiteral("shelf-")) &&
+         info.suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) == 0;
+}
+
 QString temporaryExportPath() {
   return runtimePath(QStringLiteral("export-%1-%2.png")
                          .arg(QCoreApplication::applicationPid())

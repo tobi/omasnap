@@ -315,6 +315,7 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
                                                 const QString &appSlug = {});
 [[nodiscard]] QString temporarySnapshotPath();
 [[nodiscard]] QString shelfSnapshotPath();
+[[nodiscard]] bool isShelfSnapshotPath(const QString &path);
 [[nodiscard]] QString pinnedSnapshotPath(int index);
 void prunePinnedSnapshots();
 /**

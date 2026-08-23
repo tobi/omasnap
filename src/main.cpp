@@ -153,6 +153,11 @@ int main(int argc, char **argv) {
                      "instead of capturing the screen."),
       QStringLiteral("path"));
   parser.addOption(fileOption);
+  const QCommandLineOption editShelfOption(
+      QStringLiteral("edit-shelf"),
+      QStringLiteral("Edit a private Shelf image in place."),
+      QStringLiteral("path"));
+  parser.addOption(editShelfOption);
   const QCommandLineOption clipboardOption(
       QStringLiteral("clipboard"),
       QStringLiteral("Open the current clipboard image in the annotation "
@@ -187,7 +192,15 @@ int main(int argc, char **argv) {
   startupTimingMark("command line parsed");
 
   QString filePath = parser.value(fileOption);
+  const bool editingShelf = parser.isSet(editShelfOption);
   const bool clipboardInput = parser.isSet(clipboardOption);
+  if (editingShelf) {
+    if (!filePath.isEmpty() || clipboardInput) {
+      qCritical() << "--edit-shelf cannot be combined with another image input";
+      return 2;
+    }
+    filePath = parser.value(editShelfOption);
+  }
 
   QuickOutputMode quickOutputMode = QuickOutputMode::None;
   if (parser.isSet(copyOption) && parser.isSet(saveOption))
@@ -317,6 +330,7 @@ int main(int argc, char **argv) {
 
   CaptureData capture;
   OperationLog restoredLog;
+  QString replacementOutputPath;
   QString error;
   if (editingImage) {
     QImage image;
@@ -334,6 +348,10 @@ int main(int argc, char **argv) {
       QString localFile = QUrl(filePath).toLocalFile();
       if (localFile.isEmpty())
         localFile = filePath;
+      if (editingShelf && !isShelfSnapshotPath(localFile)) {
+        qCritical() << "--edit-shelf only accepts private Shelf snapshots";
+        return 2;
+      }
       image.load(localFile);
       if (image.isNull()) {
         qCritical().noquote()
@@ -341,6 +359,8 @@ int main(int argc, char **argv) {
         return 1;
       }
       inputName = localFile;
+      if (editingShelf)
+        replacementOutputPath = localFile;
       const QString sidecar = operationLogPath(localFile);
       if (QFile::exists(sidecar) &&
           !loadOperationLog(sidecar, restoredLog, error)) {
@@ -423,6 +443,8 @@ int main(int argc, char **argv) {
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
                        restoredLog, std::move(postCaptureHandler));
   startupTimingMark("CaptureEditor constructed");
+  if (!replacementOutputPath.isEmpty())
+    editor.setReplacementOutputPath(replacementOutputPath);
   editor.setScreen(targetScreen);
   editor.setGeometry(targetScreen->geometry());
   editor.winId();

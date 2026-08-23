@@ -3396,10 +3396,12 @@ void CaptureEditor::finish(OutputMode mode) {
   const QImage backdrop = customBackdrop_;
   const QString appSlug =
       appFilenameSlug(dominantAppClass(capture_.windows, selection_));
+  const QString replacementOutput = replacementOutputPath_;
   finishWatcher_.setFuture(QtConcurrent::run([captureCopy, selection,
                                               annotations, background,
                                               imageShadow, canvasBoundary,
-                                              backdrop, appSlug, mode]() {
+                                              backdrop, appSlug,
+                                              replacementOutput, mode]() {
     FinishResult result;
     result.mode = mode;
     const QImage image = renderCapture(captureCopy, selection, annotations,
@@ -3426,11 +3428,22 @@ void CaptureEditor::finish(OutputMode mode) {
       }
     }
     if (mode == OutputMode::Save || mode == OutputMode::Both) {
-      result.saved = moveSnapshotToScreenshots(exportPath, error, appSlug);
-      if (result.saved.isEmpty()) {
+      if (!replacementOutput.isEmpty()) {
+        if (!saveTemporarySnapshot(image, replacementOutput, error, -1)) {
+          QFile::remove(exportPath);
+          result.error = error;
+          return result;
+        }
+        result.saved = replacementOutput;
         QFile::remove(exportPath);
-        result.error = error;
-        return result;
+        QFile::remove(operationLogPath(result.saved));
+      } else {
+        result.saved = moveSnapshotToScreenshots(exportPath, error, appSlug);
+        if (result.saved.isEmpty()) {
+          QFile::remove(exportPath);
+          result.error = error;
+          return result;
+        }
       }
     } else {
       QFile::remove(exportPath);
@@ -3458,19 +3471,30 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
     QString recentError;
     const bool drained = waitForSnapshot();
     snapshotDirty_ = false;
-    if (drained && recordRecentSnap(snapshotPath_, workingLogPath(),
-                                    result.thumbnail, recentError)) {
-      if (editingRecent_)
-        removeRecentSnap(*editingRecent_);
-    } else {
-      if (!recentError.isEmpty())
-        qWarning().noquote() << recentError;
+    if (!replacementOutputPath_.isEmpty()) {
       QFile::remove(workingLogPath());
       QFile::remove(snapshotPath_);
+    } else {
+      if (drained && recordRecentSnap(snapshotPath_, workingLogPath(),
+                                      result.thumbnail, recentError)) {
+        if (editingRecent_)
+          removeRecentSnap(*editingRecent_);
+      } else {
+        if (!recentError.isEmpty())
+          qWarning().noquote() << recentError;
+        QFile::remove(workingLogPath());
+        QFile::remove(snapshotPath_);
+      }
     }
     snapshotPath_.clear();
   }
-  if (result.mode == OutputMode::Copy)
+  if (!replacementOutputPath_.isEmpty() && result.mode == OutputMode::Save)
+    sendCaptureNotification(QStringLiteral("Shelf screenshot updated"));
+  else if (!replacementOutputPath_.isEmpty() &&
+           result.mode == OutputMode::Both)
+    sendCaptureNotification(
+        QStringLiteral("Shelf screenshot updated and copied"));
+  else if (result.mode == OutputMode::Copy)
     sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));
   else if (result.mode == OutputMode::Save)
     sendCaptureNotification(QStringLiteral("Screenshot saved"), result.saved);

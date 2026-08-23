@@ -1,6 +1,7 @@
 #include "shelf.hpp"
 
 #include "capture.hpp"
+#include "icons.hpp"
 #include "shelf-layout.hpp"
 
 #include <LayerShellQt/Window>
@@ -34,6 +35,8 @@ namespace {
 constexpr int kCornerRadius = 12;
 constexpr int kEdgeMargin = 18;
 constexpr int kSwipeThreshold = 42;
+constexpr int kActionSize = 28;
+constexpr int kActionInset = 7;
 
 struct ShelfRequest {
   QString path;
@@ -178,6 +181,10 @@ protected:
                           : ShelfPresentation::Expanded;
     } else if (layout_.handle.contains(event->position())) {
       presentation_ = ShelfPresentation::Stacked;
+    } else {
+      const int index = captureShelfItemAt(layout_, event->position());
+      if (index >= 0)
+        annotateItem(index);
     }
     swipeOffset_ = 0;
     applyLayout();
@@ -260,6 +267,55 @@ private:
     if (presentation_ == ShelfPresentation::Expanded && hoveredItem_ == index)
       painter.fillRect(imageRect, QColor(0, 0, 0, 35));
     painter.restore();
+    if (presentation_ == ShelfPresentation::Expanded && hoveredItem_ == index)
+      paintActionButton(painter, annotateButtonRect(index),
+                        QStringLiteral("edit"));
+  }
+
+  QRectF annotateButtonRect(int index) const {
+    const QRectF frame = layout_.thumbnails.at(index);
+    return QRectF(frame.left() + kActionInset, frame.top() + kActionInset,
+                  kActionSize, kActionSize);
+  }
+
+  void paintActionButton(QPainter &painter, const QRectF &button,
+                         const QString &icon) const {
+    painter.setPen(QPen(QColor(245, 245, 247, 65), 1));
+    painter.setBrush(QColor(12, 12, 16, 215));
+    painter.drawEllipse(button);
+    drawToolbarIcon(painter, button, icon, {}, QColor(245, 245, 247));
+  }
+
+  void annotateItem(int index) {
+    if (editingProcess_ || index < 0 || index >= items_.size())
+      return;
+    const QString path = items_.at(index).path;
+    auto *process = new QProcess(this);
+    editingProcess_ = process;
+    hide();
+    const auto finish = [this, process, path] {
+      if (editingProcess_ != process)
+        return;
+      for (Item &item : items_) {
+        if (item.path == path) {
+          const QImage updated(path);
+          if (!updated.isNull())
+            item.image = updated;
+          break;
+        }
+      }
+      editingProcess_ = nullptr;
+      process->deleteLater();
+      applyLayout();
+      show();
+      update();
+    };
+    connect(process, &QProcess::finished, this,
+            [finish](int, QProcess::ExitStatus) { finish(); });
+    connect(process, &QProcess::errorOccurred, this,
+            [finish](QProcess::ProcessError) { finish(); });
+    process->start(QCoreApplication::applicationFilePath(),
+                   {QStringLiteral("--edit-shelf"), path});
   }
 
   void paintExpandedHandle(QPainter &painter) const {
@@ -287,6 +343,7 @@ private:
   qreal swipeOffset_ = 0;
   bool dragging_ = false;
   int hoveredItem_ = -1;
+  QProcess *editingProcess_ = nullptr;
 };
 
 class ShelfServer final : public QObject {

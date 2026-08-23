@@ -17,6 +17,7 @@
 
 #include <functional>
 #include <optional>
+#include <utility>
 
 class QKeyEvent;
 class QMouseEvent;
@@ -125,6 +126,10 @@ public:
    * for it would render the full capture for nothing and stall process exit.
    */
   void setSuppressSnapshots(bool suppress) { suppressSnapshots_ = suppress; }
+  /** Save/Enter replaces this Shelf image instead of creating a new file. */
+  void setReplacementOutputPath(QString path) {
+    replacementOutputPath_ = std::move(path);
+  }
 
 protected:
   bool eventFilter(QObject *watched, QEvent *event) override;
@@ -763,6 +768,7 @@ private:
   bool dragStartStateValid_ = false;
   bool dragChanged_ = false;
   QString snapshotPath_;
+  QString replacementOutputPath_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
   PostCaptureHandler postCaptureHandler_;
   int pinCount_ = 0;

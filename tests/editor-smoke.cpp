@@ -7403,6 +7403,43 @@ bool runPostCaptureHandoffSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+bool runShelfReplacementOutputSmoke(QApplication &application,
+                                    QString &error) {
+  const QString path = shelfSnapshotPath();
+  QImage source(400, 300, QImage::Format_ARGB32_Premultiplied);
+  source.fill(QColor(QStringLiteral("#365070")));
+  if (path.isEmpty() || !isShelfSnapshotPath(path) ||
+      !saveTemporarySnapshot(source, path, error))
+    return false;
+
+  CaptureData capture;
+  capture.monitor.geometry = QRect(QPoint(), source.size());
+  capture.monitor.pixelSize = source.size();
+  capture.monitor.scale = 1.0;
+  capture.previewSize = source.size();
+  capture.source = source;
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File);
+  editor.setReplacementOutputPath(path);
+  editor.resize(source.size());
+  editor.show();
+  application.processEvents();
+  QTest::keyClick(&editor, Qt::Key_A);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+  QTest::mouseMove(&editor, QPoint(250, 180), 10);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(250, 180));
+  QTest::keyClick(&editor, Qt::Key_S, Qt::ControlModifier);
+  editor.waitForExport();
+  const QImage updated(path);
+  QFile::remove(operationLogPath(path));
+  QFile::remove(path);
+  if (editor.isVisible() || updated.isNull() || updated == source) {
+    error = QStringLiteral("Shelf annotation did not replace its source item");
+    return false;
+  }
+  return true;
+}
+
 int main(int argc, char **argv) {
   // Re-executed by the instance-lock checks as the process holding the lock.
   const QString heldLockPath =
@@ -7465,6 +7502,10 @@ int main(int argc, char **argv) {
   if (!runPostCaptureHandoffSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 125;
+  }
+  if (!runShelfReplacementOutputSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 126;
   }
   if (!runAreaLastRegionSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
