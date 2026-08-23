@@ -2232,9 +2232,22 @@ void CaptureEditor::replayLog() {
   for (int index = 0; index < opIndex_ && index < ops_.size(); ++index) {
     const Operation &op = ops_.at(index);
     switch (op.type) {
-    case Operation::Type::Crop:
+    case Operation::Type::Crop: {
+      // Annotations anchor to the image content, not to the crop frame: a
+      // recrop moves the frame's origin, so every layer shifts by the same
+      // delta to stay over the pixels it was drawn on. This matches what the
+      // live crop drag shows (mouseMoveEvent shifts the layers with the
+      // handle) and restores the committed behaviour the pre-op-log undo
+      // model had in 1.13.0. The leading crop replays over an empty layer
+      // list, so it is unaffected.
+      const QPointF originDelta = selection.topLeft() - op.crop.topLeft();
+      if (!originDelta.isNull()) {
+        for (Annotation &annotation : annotations)
+          translateAnnotation(annotation, originDelta);
+      }
       selection = op.crop;
       break;
+    }
     case Operation::Type::Background:
       background = op.background;
       break;

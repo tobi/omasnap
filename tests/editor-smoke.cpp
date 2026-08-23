@@ -2793,6 +2793,123 @@ bool runOpLogCapKeepsLeadingCrop(QApplication &application, QString &error) {
   return true;
 }
 
+/**
+ * A recrop moves the frame, never the ink: annotations stay over the pixels
+ * they were drawn on when the top/left crop handles move the selection
+ * origin, through release, undo/redo, and an op-log reload. Guards the
+ * content-anchored behaviour the live crop drag previews (the bottom-right
+ * handle exercised elsewhere has a zero origin delta and cannot catch this).
+ */
+bool runCropKeepsAnnotationsAnchored(QApplication &application,
+                                     QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 400, 300};
+  capture.monitor.pixelSize = {400, 300};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(400, 300, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#112233")));
+  capture.previewSize = capture.source.size();
+
+  const auto lineAt = [](const QImage &image, int x, int y) {
+    const QColor pixel = image.pixelColor(x, y);
+    return pixel.red() > 200 && pixel.green() < 100;
+  };
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File);
+  editor.setSuppressSnapshots(true);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+  // The 400x300 image fits at scale 1, centered: widget (200,155) is
+  // annotation (0,0). Draw a line across annotation y=100.
+  QTest::keyClick(&editor, Qt::Key_L);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(300, 255));
+  QTest::mouseMove(&editor, QPoint(500, 255), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(500, 255));
+  application.processEvents();
+  if (!lineAt(editor.renderCurrentOutput(), 150, 100)) {
+    error = QStringLiteral("Anchoring check could not draw its line");
+    return false;
+  }
+
+  // Drag the top-left crop handle (at the image corner minus its 7 px
+  // offset) inward by 43 logical px on both axes.
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseMove(&editor, QPoint(193, 148), 20);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(193, 148));
+  QTest::mouseMove(&editor, QPoint(220, 175), 20);
+  QTest::mouseMove(&editor, QPoint(243, 198), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(243, 198));
+  application.processEvents();
+  if (editor.currentSelection() != QRectF(43, 43, 357, 257)) {
+    error = QStringLiteral("Top-left crop drag did not land on (43,43)");
+    return false;
+  }
+  QImage cropped = editor.renderCurrentOutput();
+  if (!lineAt(cropped, 150, 57) || !lineAt(cropped, 70, 57) ||
+      lineAt(cropped, 280, 57) || lineAt(cropped, 150, 100)) {
+    error = QStringLiteral(
+        "Crop from the top-left moved the line off its content");
+    return false;
+  }
+
+  // Undo restores the full frame with the line back at y=100; redo re-crops
+  // and re-anchors.
+  QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+  application.processEvents();
+  const QImage uncropped = editor.renderCurrentOutput();
+  if (!lineAt(uncropped, 150, 100) || !lineAt(uncropped, 280, 100) ||
+      lineAt(uncropped, 70, 57)) {
+    error = QStringLiteral("Undoing the crop did not restore the line");
+    return false;
+  }
+  QTest::keyClick(&editor, Qt::Key_Y, Qt::ControlModifier);
+  application.processEvents();
+  cropped = editor.renderCurrentOutput();
+  if (!lineAt(cropped, 150, 57) || !lineAt(cropped, 70, 57) ||
+      lineAt(cropped, 280, 57) || lineAt(cropped, 150, 100)) {
+    error = QStringLiteral("Redoing the crop lost the content anchoring");
+    return false;
+  }
+
+  // A reload of the persisted op log replays to the same anchored result.
+  QTemporaryDir directory;
+  if (!directory.isValid()) {
+    error = QStringLiteral("Could not create crop-anchor directory");
+    return false;
+  }
+  const QString logPath =
+      QDir(directory.path()).filePath(QStringLiteral("anchored.json"));
+  OperationLog persisted;
+  persisted.ops = editor.operationLog();
+  persisted.index = editor.operationIndex();
+  if (!saveOperationLog(logPath, persisted, error))
+    return false;
+  OperationLog reloaded;
+  if (!loadOperationLog(logPath, reloaded, error))
+    return false;
+  editor.close();
+
+  CaptureEditor replayed(capture, CaptureEditor::CaptureMode::File,
+                         QuickOutputMode::None, reloaded);
+  replayed.setSuppressSnapshots(true);
+  replayed.resize(800, 600);
+  replayed.show();
+  application.processEvents();
+  const QImage restored = replayed.renderCurrentOutput();
+  if (replayed.currentSelection() != QRectF(43, 43, 357, 257) ||
+      !lineAt(restored, 150, 57) || !lineAt(restored, 70, 57) ||
+      lineAt(restored, 280, 57) || lineAt(restored, 150, 100)) {
+    error = QStringLiteral("Reloaded op log lost the crop anchoring");
+    return false;
+  }
+  replayed.close();
+  return true;
+}
+
 } // namespace
 /** Runs the interaction and rendering smoke checks. */
 /** Runs the interaction and rendering smoke checks. */
@@ -5863,6 +5980,10 @@ int main(int argc, char **argv) {
   if (!runOpLogCapKeepsLeadingCrop(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 84;
+  }
+  if (!runCropKeepsAnnotationsAnchored(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 125;
   }
   const QString outputRoot =
       argc > 1 ? QString::fromLocal8Bit(argv[1])
