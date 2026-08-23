@@ -37,10 +37,9 @@ lint: build
 			"$$commands_dir/compile_commands.json"; \
 		sed -i 's/ -mno-direct-extern-access//g' \
 			"$$commands_dir/compile_commands.json"; \
-		for source in $(LINT_SOURCES); do \
+		printf '%s\n' $(LINT_SOURCES) | xargs -r -P "$$(nproc)" -n 1 \
 			"$(CLANG_TIDY)" -p "$$commands_dir" \
-				-checks="$(LINT_CHECKS)" -header-filter='.*' "$$source"; \
-		done; \
+			-checks="$(LINT_CHECKS)" -header-filter='.*'; \
 	else \
 		echo "make check: clang-tidy unavailable; skipping"; \
 	fi
