@@ -19,6 +19,7 @@
 #include <QGuiApplication>
 #include <QLockFile>
 #include <QScreen>
+#include <QScopeGuard>
 #include <QSocketNotifier>
 #include <QUrl>
 #include <QWindow>
@@ -327,6 +328,12 @@ int main(int argc, char **argv) {
       qCritical().noquote() << lockResult.error;
     return lockResult.exitCode;
   }
+  const bool shelfHiddenForCapture =
+      !editingImage && setCaptureShelfHidden(true);
+  const auto restoreShelf = qScopeGuard([shelfHiddenForCapture] {
+    if (shelfHiddenForCapture)
+      static_cast<void>(setCaptureShelfHidden(false));
+  });
 
   CaptureData capture;
   OperationLog restoredLog;

@@ -19,6 +19,7 @@
 #include <QKeyEvent>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QLockFile>
 #include <QMargins>
 #include <QMouseEvent>
 #include <QPainter>
@@ -41,6 +42,7 @@ constexpr int kActionSize = 28;
 constexpr int kActionInset = 7;
 
 struct ShelfRequest {
+  QString action = QStringLiteral("add");
   QString path;
   QString screenName;
 };
@@ -54,6 +56,7 @@ QString shelfSocketPath() {
 
 QByteArray encodeRequest(const ShelfRequest &request) {
   QJsonObject object;
+  object.insert(QStringLiteral("action"), request.action);
   object.insert(QStringLiteral("path"), request.path);
   object.insert(QStringLiteral("screen"), request.screenName);
   return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
@@ -64,14 +67,16 @@ ShelfRequest decodeRequest(const QByteArray &payload) {
   if (!document.isObject())
     return {};
   const QJsonObject object = document.object();
-  return {object.value(QStringLiteral("path")).toString(),
-          object.value(QStringLiteral("screen")).toString()};
+  return {
+      object.value(QStringLiteral("action")).toString(QStringLiteral("add")),
+      object.value(QStringLiteral("path")).toString(),
+      object.value(QStringLiteral("screen")).toString()};
 }
 
 bool notifyExistingShelf(const QString &socketPath,
                          const ShelfRequest &request) {
   QLocalSocket socket;
-  socket.connectToServer(socketPath, QIODevice::WriteOnly);
+  socket.connectToServer(socketPath, QIODevice::ReadWrite);
   if (!socket.waitForConnected(150))
     return false;
   const QByteArray payload = encodeRequest(request);
@@ -80,8 +85,11 @@ bool notifyExistingShelf(const QString &socketPath,
   socket.flush();
   if (socket.bytesToWrite() > 0 && !socket.waitForBytesWritten(500))
     return false;
+  static_cast<void>(socket.waitForReadyRead(1000));
+  const QByteArray response = socket.readAll().trimmed();
+  const bool acknowledged = response == QByteArrayLiteral("ok");
   socket.disconnectFromServer();
-  return true;
+  return acknowledged;
 }
 
 QScreen *screenByName(const QString &name) {
@@ -120,6 +128,22 @@ public:
     applyLayout();
   }
 
+  void handleRequest(const ShelfRequest &request) {
+    if (request.action == QStringLiteral("hide")) {
+      captureHidden_ = true;
+      hide();
+      QGuiApplication::sync();
+    } else if (request.action == QStringLiteral("show")) {
+      captureHidden_ = false;
+      if (!items_.isEmpty() && !editingProcess_)
+        show();
+      QGuiApplication::sync();
+    } else {
+      captureHidden_ = false;
+      addCapture(request);
+    }
+  }
+
   void addCapture(const ShelfRequest &request) {
     const QFileInfo info(request.path);
     QImage image(info.absoluteFilePath());
@@ -145,7 +169,8 @@ public:
         layer_->setScreen(target);
     }
     applyLayout();
-    show();
+    if (!captureHidden_ && !editingProcess_)
+      show();
     update();
   }
 
@@ -429,6 +454,7 @@ private:
   int hoveredItem_ = -1;
   QProcess *editingProcess_ = nullptr;
   QString toast_;
+  bool captureHidden_ = false;
 };
 
 class ShelfServer final : public QObject {
@@ -443,19 +469,23 @@ private:
   void acceptConnections() {
     while (server_.hasPendingConnections()) {
       QLocalSocket *socket = server_.nextPendingConnection();
-      connect(socket, &QLocalSocket::readyRead, socket, [socket] {
-        socket->setProperty("omasnap-payload",
-                            socket->property("omasnap-payload").toByteArray() +
-                                socket->readAll());
-      });
-      connect(socket, &QLocalSocket::disconnected, socket, [this, socket] {
+      connect(socket, &QLocalSocket::readyRead, socket, [this, socket] {
         QByteArray payload = socket->property("omasnap-payload").toByteArray();
         payload += socket->readAll();
+        if (!payload.contains('\n')) {
+          socket->setProperty("omasnap-payload", payload);
+          return;
+        }
         const ShelfRequest request = decodeRequest(payload);
-        if (!request.path.isEmpty())
-          window_.addCapture(request);
-        socket->deleteLater();
+        if (request.action != QStringLiteral("add") ||
+            !request.path.isEmpty()) {
+          window_.handleRequest(request);
+          socket->write(QByteArrayLiteral("ok\n"));
+          socket->flush();
+        }
       });
+      connect(socket, &QLocalSocket::disconnected, socket,
+              &QObject::deleteLater);
     }
   }
 
@@ -486,8 +516,18 @@ bool queueCaptureOnShelf(const QImage &image, const QString &screenName,
   return true;
 }
 
+bool setCaptureShelfHidden(bool hidden) {
+  const QString socketPath = shelfSocketPath();
+  return !socketPath.isEmpty() &&
+         notifyExistingShelf(socketPath, {hidden ? QStringLiteral("hide")
+                                                 : QStringLiteral("show"),
+                                          {},
+                                          {}});
+}
+
 int runCaptureShelf(const QString &path, const QString &screenName) {
-  const ShelfRequest request{QFileInfo(path).absoluteFilePath(), screenName};
+  const ShelfRequest request{QStringLiteral("add"),
+                             QFileInfo(path).absoluteFilePath(), screenName};
   if (!QFileInfo::exists(request.path)) {
     qCritical("omasnap: Shelf image does not exist: %s",
               qUtf8Printable(request.path));
@@ -499,6 +539,16 @@ int runCaptureShelf(const QString &path, const QString &screenName) {
     return 1;
   if (notifyExistingShelf(socketPath, request))
     return 0;
+
+  const QString runtime = secureRuntimeDirectory();
+  QLockFile shelfLock(QDir(runtime).filePath(QStringLiteral("shelf.instance")));
+  shelfLock.setStaleLockTime(0);
+  if (!shelfLock.tryLock()) {
+    if (notifyExistingShelf(socketPath, request))
+      return 0;
+    qCritical("omasnap: the capture Shelf is running but did not respond");
+    return 1;
+  }
 
   QLocalServer::removeServer(socketPath);
   QLocalServer server;
