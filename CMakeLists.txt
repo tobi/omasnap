@@ -45,6 +45,8 @@ add_library(omasnap-core STATIC
   src/pin-layout.hpp
   src/capture.cpp
   src/capture.hpp
+  src/capture-delay.cpp
+  src/capture-delay.hpp
   src/cut.cpp
   src/cut.hpp
   src/palette-config.cpp
@@ -99,6 +101,8 @@ target_link_libraries(omasnap PRIVATE omasnap-core)
 if(BUILD_TESTING)
 qt_add_executable(omasnap-smoke
   tests/editor-smoke.cpp
+  tests/capture-delay-smoke.cpp
+  tests/capture-delay-smoke.hpp
   tests/clipboard-smoke.cpp
   tests/clipboard-smoke.hpp
   tests/instance-lock-smoke.cpp

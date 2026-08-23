@@ -1,6 +1,7 @@
 /** @fileoverview Exercises capture editor behavior without a live compositor.
  */
 #include "capture.hpp"
+#include "capture-delay-smoke.hpp"
 #include "output-config.hpp"
 #include "cli-path.hpp"
 #include "clipboard-smoke.hpp"
@@ -2306,6 +2307,10 @@ bool runSpotlightWheelSmoke(QApplication &application, QString &error) {
 
 /** Window crop, undo/redo replay, persist+reload, and redaction order. */
 bool runOpLogSmoke(QApplication &application, QString &error) {
+  if (!operationLogPath(QString()).isEmpty()) {
+    error = QStringLiteral("Empty snapshot path produced a sidecar path");
+    return false;
+  }
   CaptureData capture;
   capture.monitor.name = QStringLiteral("TEST");
   capture.monitor.geometry = {0, 0, 800, 600};
@@ -6758,6 +6763,12 @@ int main(int argc, char **argv) {
       qWarning().noquote() << clipboardError;
       return 64;
     }
+  }
+
+  QString delayError;
+  if (!runCaptureDelaySmoke(delayError)) {
+    qWarning().noquote() << "capture delay smoke failed:" << delayError;
+    return 124;
   }
 
   QString clipboardError;

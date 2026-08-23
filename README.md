@@ -10,6 +10,8 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 ## Features
 
 - Freeform region, window, and full-monitor capture modes.
+- Delayed capture with a countdown in any screen corner; longer delays use a
+  compact timer until the final five seconds.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
   region, a hovered window, or a crop handle is being sized.
@@ -184,6 +186,22 @@ omasnap smart       # maps to region selection
 
 These options choose what is initially selected; the editor still controls whether the
 result is copied, saved, or both.
+
+Use `--delay SECONDS` to wait before capturing. The countdown appears in the top-right
+corner by default; `--delay-position` accepts `top-left`, `top-right`, `bottom-left`,
+or `bottom-right`:
+
+```bash
+omasnap --delay 5
+omasnap --capture-window --delay 3 --delay-position bottom-left
+omasnap --capture-fullscreen --copy --delay 10
+```
+
+The delay must be a whole number from 0 through 3600 and applies only to screen
+captures, not `--file`, `--clipboard`, or `--pin`. The countdown stays on the monitor
+that was focused when Omasnap started, which is also the monitor captured. Starting
+Omasnap again during the countdown cancels it through the normal single-instance
+behavior.
 
 Quick output skips the annotation editor. Add `--copy` to copy only, `--save` to save
 only, or both flags to copy and save. Region and window captures output after selection;
