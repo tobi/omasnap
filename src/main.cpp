@@ -4,6 +4,7 @@
 #include "instance-lock.hpp"
 #include "pin.hpp"
 #include "recent-snaps.hpp"
+#include "shelf.hpp"
 #include "startup-timing.hpp"
 
 #include <LayerShellQt/Window>
@@ -167,6 +168,16 @@ int main(int argc, char **argv) {
       QStringLiteral("Capture a scrolling region and stitch it into one tall "
                      "image, then open it in the editor."));
   parser.addOption(scrollOption);
+  const QCommandLineOption shelfOption(
+      QStringLiteral("shelf"),
+      QStringLiteral("Add an image to the capture Shelf."),
+      QStringLiteral("path"));
+  const QCommandLineOption shelfScreenOption(
+      QStringLiteral("shelf-screen"),
+      QStringLiteral("Place the capture Shelf on this output."),
+      QStringLiteral("name"));
+  parser.addOption(shelfOption);
+  parser.addOption(shelfScreenOption);
   parser.addPositionalArgument(
       QStringLiteral("target"),
       QStringLiteral("Capture mode (smart, region, windows, fullscreen) or the "
@@ -198,6 +209,23 @@ int main(int argc, char **argv) {
     captureMode = CaptureEditor::CaptureMode::Scroll;
 
   const QStringList positional = parser.positionalArguments();
+  if (parser.isSet(shelfOption)) {
+    if (parser.isSet(pinOption) || !filePath.isEmpty() || clipboardInput ||
+        requestedModes > 0 || !positional.isEmpty() ||
+        quickOutputMode != QuickOutputMode::None) {
+      qCritical()
+          << "Shelf mode cannot be combined with capture or edit targets";
+      return 2;
+    }
+    QString shelfPath = QUrl(parser.value(shelfOption)).toLocalFile();
+    if (shelfPath.isEmpty())
+      shelfPath = parser.value(shelfOption);
+    return runCaptureShelf(shelfPath, parser.value(shelfScreenOption));
+  }
+  if (parser.isSet(shelfScreenOption)) {
+    qCritical() << "--shelf-screen requires --shelf";
+    return 2;
+  }
   if (parser.isSet(pinOption)) {
     if (!filePath.isEmpty() || clipboardInput || requestedModes > 0 ||
         !positional.isEmpty() || quickOutputMode != QuickOutputMode::None) {

@@ -14,6 +14,7 @@
 #include "stitch-smoke.hpp"
 #include "stitch.hpp"
 #include "pin-lifecycle-smoke.hpp"
+#include "shelf-layout-smoke.hpp"
 #include "text-band.hpp"
 #include "transform-smoke.hpp"
 #include "eyedropper.hpp"
@@ -8886,6 +8887,12 @@ int main(int argc, char **argv) {
   if (!runInstanceLockSmoke(instanceError)) {
     qWarning().noquote() << instanceError;
     return 85;
+  }
+
+  QString shelfLayoutError;
+  if (!runShelfLayoutSmoke(shelfLayoutError)) {
+    qWarning().noquote() << shelfLayoutError;
+    return 89;
   }
   return 0;
 }

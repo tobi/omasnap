@@ -5,7 +5,7 @@ include(CTest)
 set(CMAKE_AUTOMOC ON)
 
 find_package(PkgConfig REQUIRED)
-find_package(Qt6 6.8 REQUIRED COMPONENTS Concurrent Core Gui Test Widgets)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Concurrent Core Gui Network Test Widgets)
 find_package(LayerShellQt REQUIRED)
 pkg_check_modules(WaylandClient REQUIRED IMPORTED_TARGET wayland-client)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -43,6 +43,8 @@ add_library(omasnap-core STATIC
   src/pin-file.hpp
   src/pin-layout.cpp
   src/pin-layout.hpp
+  src/shelf-layout.cpp
+  src/shelf-layout.hpp
   src/capture.cpp
   src/capture.hpp
   src/cut.cpp
@@ -128,10 +130,19 @@ target_link_libraries(omasnap-core PUBLIC
   PkgConfig::WaylandClient
 )
 
-qt_add_executable(omasnap src/main.cpp src/pin.cpp src/pin.hpp)
+qt_add_executable(omasnap
+  src/main.cpp
+  src/pin.cpp
+  src/pin.hpp
+  src/shelf.cpp
+  src/shelf.hpp
+)
 target_compile_options(omasnap PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(omasnap PRIVATE OMASNAP_VERSION="${PROJECT_VERSION}")
-target_link_libraries(omasnap PRIVATE omasnap-core)
+target_link_libraries(omasnap PRIVATE
+  omasnap-core
+  Qt6::Network
+)
 target_precompile_headers(omasnap REUSE_FROM omasnap-core)
 
 if(BUILD_TESTING)
@@ -169,6 +180,8 @@ qt_add_executable(omasnap-smoke
   src/auto-capture.hpp
   tests/stitch-smoke.cpp
   tests/stitch-smoke.hpp
+  tests/shelf-layout-smoke.cpp
+  tests/shelf-layout-smoke.hpp
 )
 target_include_directories(omasnap-smoke PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
