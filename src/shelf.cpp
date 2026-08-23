@@ -328,6 +328,10 @@ bool queueCaptureOnShelf(const QImage &image, const QString &screenName,
   const QString path = shelfSnapshotPath();
   if (path.isEmpty() || !saveTemporarySnapshot(image, path, error, -1))
     return false;
+  if (!copyPngFileToClipboard(path, error)) {
+    QFile::remove(path);
+    return false;
+  }
   QStringList arguments{QStringLiteral("--shelf"), path};
   if (!screenName.isEmpty())
     arguments << QStringLiteral("--shelf-screen") << screenName;
