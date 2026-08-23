@@ -353,7 +353,14 @@ private:
   void annotateItem(int index) {
     if (editingProcess_ || index < 0 || index >= items_.size())
       return;
-    const QString path = items_.at(index).path;
+    const Item &item = items_.at(index);
+    const QString path = item.path;
+    QString error;
+    if (!QFileInfo::exists(path) &&
+        !saveTemporarySnapshot(item.image, path, error, -1)) {
+      showToast(error);
+      return;
+    }
     auto *process = new QProcess(this);
     editingProcess_ = process;
     hide();
@@ -386,7 +393,7 @@ private:
     if (index < 0 || index >= items_.size())
       return;
     QString error;
-    showToast(copyPngFileToClipboard(items_.at(index).path, error)
+    showToast(copyImageToClipboard(items_.at(index).image, error)
                   ? QStringLiteral("Copied to clipboard")
                   : error);
   }

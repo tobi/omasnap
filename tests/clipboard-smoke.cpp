@@ -111,6 +111,17 @@ bool runClipboardSmoke(QString &error) {
     error = QStringLiteral("Could not create fake wl-paste command");
     return false;
   }
+  const QString fakeWlCopy =
+      QDir(directory.path()).filePath(QStringLiteral("wl-copy"));
+  const QByteArray copyScript = QByteArrayLiteral(
+      "#!/usr/bin/env bash\n"
+      "set -euo pipefail\n"
+      "[[ \"${1:-}\" == \"--type\" && \"${2:-}\" == \"image/png\" ]]\n"
+      "cat > \"$OMASNAP_TEST_CLIPBOARD_COPY\"\n");
+  if (!writeExecutable(fakeWlCopy, copyScript)) {
+    error = QStringLiteral("Could not create fake wl-copy command");
+    return false;
+  }
 
   const bool pathWasSet = qEnvironmentVariableIsSet("PATH");
   const QByteArray oldPath = qgetenv("PATH");
@@ -124,6 +135,9 @@ bool runClipboardSmoke(QString &error) {
       qEnvironmentVariableIsSet("OMASNAP_TEST_CLIPBOARD_READ_FAILURE");
   const QByteArray oldReadFailure =
       qgetenv("OMASNAP_TEST_CLIPBOARD_READ_FAILURE");
+  const bool copyWasSet =
+      qEnvironmentVariableIsSet("OMASNAP_TEST_CLIPBOARD_COPY");
+  const QByteArray oldCopy = qgetenv("OMASNAP_TEST_CLIPBOARD_COPY");
   const auto restoreEnvironment = qScopeGuard([=] {
     pathWasSet ? qputenv("PATH", oldPath) : qunsetenv("PATH");
     imageWasSet ? qputenv("OMASNAP_TEST_CLIPBOARD_IMAGE", oldImage)
@@ -134,12 +148,23 @@ bool runClipboardSmoke(QString &error) {
     readFailureWasSet
         ? qputenv("OMASNAP_TEST_CLIPBOARD_READ_FAILURE", oldReadFailure)
         : qunsetenv("OMASNAP_TEST_CLIPBOARD_READ_FAILURE");
+    copyWasSet ? qputenv("OMASNAP_TEST_CLIPBOARD_COPY", oldCopy)
+               : qunsetenv("OMASNAP_TEST_CLIPBOARD_COPY");
   });
+  const QString copiedPath =
+      QDir(directory.path()).filePath(QStringLiteral("copied.png"));
   qputenv("PATH", directory.path().toUtf8() + ':' + oldPath);
   qputenv("OMASNAP_TEST_CLIPBOARD_IMAGE", imagePath.toUtf8());
+  qputenv("OMASNAP_TEST_CLIPBOARD_COPY", copiedPath.toUtf8());
   qunsetenv("OMASNAP_TEST_CLIPBOARD_TEXT_ONLY");
   qunsetenv("OMASNAP_TEST_CLIPBOARD_READ_FAILURE");
 
+  if (!copyImageToClipboard(expected, error) ||
+      QImage(copiedPath) != expected) {
+    if (error.isEmpty())
+      error = QStringLiteral("Clipboard image copy did not preserve pixels");
+    return false;
+  }
   return runImageCheck(error) && runTextOnlyCheck(error) &&
          runReadFailureCheck(error);
 }
