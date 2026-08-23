@@ -1,5 +1,6 @@
 #include "capture.hpp"
 #include "cli-path.hpp"
+#include "code-image.hpp"
 #include "editor.hpp"
 #include "instance-lock.hpp"
 #include "pin.hpp"
@@ -113,8 +114,8 @@ int main(int argc, char **argv) {
       "quit and the\nnew process exits without capturing, so the same hotkey "
       "opens and closes the\noverlay. Quick output (--copy, --save) dismisses "
       "it the same way instead of\nscreenshotting the overlay. With --file (or "
-      "an image path) or --clipboard, the running\ninstance is stopped and "
-      "the editor opens on that image instead.\n"
+      "an image path), --clipboard, or --code, the running\ninstance is stopped "
+      "and the editor opens on that content instead.\n"
       "\n"
       "Exit codes: 0 success, including dismissing a running overlay; 1 "
       "capture,\nimage, or single-instance lock failure; 2 usage error."));
@@ -151,6 +152,22 @@ int main(int argc, char **argv) {
       QStringLiteral("Open the current clipboard image in the annotation "
                      "editor instead of capturing the screen."));
   parser.addOption(clipboardOption);
+  const QCommandLineOption codeOption(
+      QStringLiteral("code"),
+      QStringLiteral("Turn a code file or the text clipboard into a themed "
+                     "image and open it in the editor."));
+  const QCommandLineOption languageOption(
+      QStringLiteral("language"),
+      QStringLiteral("Override automatic Neovim filetype detection for "
+                     "--code."),
+      QStringLiteral("filetype"));
+  const QCommandLineOption titleOption(
+      QStringLiteral("title"),
+      QStringLiteral("Override the optional title shown on a --code image."),
+      QStringLiteral("text"));
+  parser.addOption(codeOption);
+  parser.addOption(languageOption);
+  parser.addOption(titleOption);
   const QCommandLineOption pinOption(
       QStringLiteral("pin"),
       QStringLiteral("Show an image as a pinned always-visible layer."),
@@ -159,12 +176,15 @@ int main(int argc, char **argv) {
   parser.addPositionalArgument(
       QStringLiteral("target"),
       QStringLiteral("Capture mode (smart, region, windows, fullscreen) or the "
-                     "path of an image file to edit."),
+                     "path of an image file to edit; with --code, a source "
+                     "file to render."),
       QStringLiteral("[target]"));
   parser.process(application);
 
   QString filePath = parser.value(fileOption);
   const bool clipboardInput = parser.isSet(clipboardOption);
+  const bool codeInput = parser.isSet(codeOption);
+  QString codePath;
 
   QuickOutputMode quickOutputMode = QuickOutputMode::None;
   if (parser.isSet(copyOption) && parser.isSet(saveOption))
@@ -184,7 +204,9 @@ int main(int argc, char **argv) {
 
   const QStringList positional = parser.positionalArguments();
   if (parser.isSet(pinOption)) {
-    if (!filePath.isEmpty() || clipboardInput || requestedModes > 0 ||
+    if (!filePath.isEmpty() || clipboardInput || codeInput ||
+        parser.isSet(languageOption) || parser.isSet(titleOption) ||
+        requestedModes > 0 ||
         !positional.isEmpty() || quickOutputMode != QuickOutputMode::None) {
       qCritical()
           << "Pinned mode cannot be combined with capture or edit targets";
@@ -195,13 +217,26 @@ int main(int argc, char **argv) {
       pinPath = parser.value(pinOption);
     return runPinnedCapture(pinPath);
   }
+  if (!codeInput &&
+      (parser.isSet(languageOption) || parser.isSet(titleOption))) {
+    qCritical() << "--language and --title require --code";
+    return 2;
+  }
   if (positional.size() > 1) {
     qCritical() << "Only one capture target may be specified";
     return 2;
   }
   if (!positional.isEmpty()) {
     const QString localTarget = resolveLocalImagePath(positional.first());
-    if (filePath.isEmpty() && !localTarget.isEmpty()) {
+    if (codeInput) {
+      if (localTarget.isEmpty()) {
+        qCritical().noquote()
+            << QStringLiteral("Could not read code file: %1")
+                   .arg(positional.first());
+        return 2;
+      }
+      codePath = localTarget;
+    } else if (filePath.isEmpty() && !localTarget.isEmpty()) {
       filePath = localTarget;
     } else {
       ++requestedModes;
@@ -233,8 +268,14 @@ int main(int argc, char **argv) {
     qCritical() << "Clipboard input cannot be combined with another target";
     return 2;
   }
-  const bool editingImage = clipboardInput || !filePath.isEmpty();
-  if (editingImage && quickOutputMode != QuickOutputMode::None) {
+  if (codeInput &&
+      (!filePath.isEmpty() || clipboardInput || requestedModes > 0)) {
+    qCritical() << "Code input cannot be combined with a capture or image input";
+    return 2;
+  }
+  const bool editingContent = codeInput || clipboardInput || !filePath.isEmpty();
+  if (!codeInput && editingContent &&
+      quickOutputMode != QuickOutputMode::None) {
     qCritical()
         << "Quick output options cannot be combined with an image input";
     return 2;
@@ -254,8 +295,8 @@ int main(int argc, char **argv) {
   // of starting a second one: a late capture would otherwise photograph that overlay.
   // Editing an image always takes over so the requested editor can open.
   const InstanceLockResult lockResult = acquireInstanceLock(
-      instanceLock, editingImage ? InstanceMode::EditFile
-                                 : InstanceMode::Capture);
+      instanceLock, editingContent ? InstanceMode::EditFile
+                                   : InstanceMode::Capture);
   if (lockResult.signalledPid != 0)
     qInfo().noquote() << QStringLiteral("Asked the running omasnap (pid %1) to "
                                         "quit")
@@ -269,7 +310,47 @@ int main(int argc, char **argv) {
   CaptureData capture;
   OperationLog restoredLog;
   QString error;
-  if (editingImage) {
+  if (codeInput) {
+    CodeImageRequest request;
+    if (!loadCodeInput(codePath, request.code, error)) {
+      const QString message = QStringLiteral("Code image failed: %1").arg(error);
+      qCritical().noquote() << message;
+      sendCaptureNotification(message);
+      return 1;
+    }
+    request.language = parser.value(languageOption);
+    request.sourceName =
+        !codePath.isEmpty()
+            ? codePath
+            : request.language.trimmed().isEmpty() ? activeCodeFilenameHint()
+                                                   : QString();
+    request.title = parser.value(titleOption);
+    QString detectedLanguage;
+    if (!createCodeImage(request, capture.source, detectedLanguage, error)) {
+      const QString message =
+          error == QStringLiteral("Neovim is required for code highlighting")
+              ? QStringLiteral("Code image needs Neovim · reinstall nvim")
+              : QStringLiteral("Code image failed: %1").arg(error);
+      qCritical().noquote() << message;
+      sendCaptureNotification(message);
+      return 1;
+    }
+    capture.previewSize = capture.source.size();
+    capture.monitor.scale = 1.0;
+    capture.monitor.pixelSize = capture.source.size();
+    capture.monitor.geometry = QRect(QPoint(0, 0), capture.source.size());
+    captureMode = CaptureEditor::CaptureMode::Code;
+    Operation background;
+    background.type = Operation::Type::Background;
+    background.background = BackgroundStyle::Aurora;
+    restoredLog.ops = {background};
+    restoredLog.index = 1;
+    qInfo().noquote()
+        << QStringLiteral("Rendered %1 lines of %2 code with Neovim")
+               .arg(request.code.count(QChar('\n')) + 1)
+               .arg(detectedLanguage.isEmpty() ? QStringLiteral("plain text")
+                                               : detectedLanguage);
+  } else if (editingContent) {
     QImage image;
     QString inputName;
     if (clipboardInput) {
@@ -316,12 +397,24 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (codeInput && quickOutputMode != QuickOutputMode::None) {
+    const QImage output = renderCapture(
+        capture, QRectF(QPointF(), capture.previewSize), {},
+        BackgroundStyle::Aurora);
+    if (!quickOutput(output, quickOutputMode, error,
+                     QStringLiteral("Code image"))) {
+      qCritical().noquote() << error;
+      return 1;
+    }
+    return 0;
+  }
+
   // Grab the output before the layer exists. ext-image-copy-capture waits for
   // a composited frame, so mapping the dim overlay first photographs the veil.
   const bool instantFullscreenOutput =
-      !editingImage && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
+      !editingContent && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
       quickOutputMode != QuickOutputMode::None;
-  if (!editingImage &&
+  if (!editingContent &&
       !captureMonitorPixels(capture.monitor, capture,
                             !instantFullscreenOutput, error)) {
     qCritical().noquote() << error;
@@ -355,7 +448,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (!editingImage) {
+  if (!editingContent) {
     qInfo().noquote() << QStringLiteral(
                              "Captured %1 workspace %2 with %3 selectable "
                              "windows")

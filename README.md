@@ -35,6 +35,8 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 - Verified PNG clipboard output through `wl-copy`/`wl-paste`, plus timestamped files
   under `~/Pictures/Screenshots` by default.
 - Open an image already on the clipboard directly in the annotation editor.
+- Turn copied code or a source file into a Neovim-highlighted image that follows
+  the current Omarchy theme, then annotate and share it through the same editor.
 - Correct native-pixel export on fractional or integer-scaled monitors.
 
 ## Platform scope
@@ -53,6 +55,8 @@ Runtime commands used by the application:
 - `hyprctl`
 - `wl-copy` and `wl-paste`
 - `tesseract`
+- `nvim` for code-to-image syntax highlighting. Omarchy installs it by default;
+  code mode shows a notification if it has been removed.
 - `omarchy-notification-send` when available; saved captures include a thumbnail and
   reopen in Omasnap when clicked. Notification failure does not invalidate output.
 
@@ -222,6 +226,43 @@ omasnap --clipboard
 
 The clipboard must offer readable image data. Text-only clipboard contents return an
 error instead of opening an empty editor.
+
+### Share code as an image
+
+Copy a snippet and open it as a themed code image:
+
+```bash
+omasnap --code
+```
+
+Or render a source file directly:
+
+```bash
+omasnap --code path/to/example.rs
+```
+
+The language is detected automatically and can be overridden. Omasnap first uses a
+source filename (including one found in the active window title), then asks Neovim to
+detect the filetype from the filename and recognizable content. A title is optional;
+when omitted, no title row is drawn:
+
+```bash
+omasnap --code --language rust
+omasnap --code --title "Retry worker"
+```
+
+Code input is limited to 32 KiB, 120 lines, and 240 characters per line so the
+result stays suitable for sharing.
+
+Code mode opens the normal annotation editor with an existing mesh-gradient backdrop
+enabled. Press `B` to cycle the same backdrop styles used for screenshots. The existing
+quick-output flags work too:
+
+```bash
+omasnap --code --copy
+omasnap --code path/to/example.rs --save
+omasnap --code --copy --save
+```
 
 File URLs are accepted too. A saved capture notification's "Click to edit" action launches
 `omasnap` on the finished screenshot, so it can be reopened and re-annotated. Captures copied

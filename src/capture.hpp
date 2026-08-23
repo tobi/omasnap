@@ -154,7 +154,9 @@ enum class AnnotationLayer { Redaction, Default };
 [[nodiscard]] bool copyPngFileToClipboard(const QString &path, QString &error);
 [[nodiscard]] bool copyImageToClipboard(const QImage &image, QString &error);
 [[nodiscard]] bool quickOutput(const QImage &image, QuickOutputMode mode,
-                               QString &error);
+                               QString &error,
+                               const QString &outputName =
+                                   QStringLiteral("Screenshot"));
 [[nodiscard]] bool copyTextToClipboard(const QString &text, QString &error);
 void paintAnnotation(QPainter &painter, const Annotation &annotation);
 [[nodiscard]] QPainterPath spotlightPath(const Annotation &annotation);

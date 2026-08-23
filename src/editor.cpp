@@ -535,7 +535,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
                              QuickOutputMode quickOutput, OperationLog log,
                              QWidget *parent)
     : QWidget(parent), capture_(std::move(capture)),
-      quickOutputMode_(quickOutput) {
+      captureMode_(mode), quickOutputMode_(quickOutput) {
   pristineSource_ = capture_.source;
   pristineLogicalSize_ = capture_.previewSize;
   paletteConfig_ = loadPaletteConfig(defaultPaletteConfigPath());
@@ -709,6 +709,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
                   "Drag to select an area · Space selects a window"));
               break;
             case CaptureMode::File:
+            case CaptureMode::Code:
               break;
             }
             updatePointerCursor();
@@ -744,7 +745,8 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     capturePending_ = true;
     pendingMode_ = mode;
     setStatus(QStringLiteral("Capturing screen…"));
-  } else if (mode == CaptureMode::Fullscreen || mode == CaptureMode::File) {
+  } else if (mode == CaptureMode::Fullscreen || mode == CaptureMode::File ||
+             mode == CaptureMode::Code) {
     if (ops_.isEmpty())
       selection_ = QRectF(QPointF(), capture_.previewSize);
     else
@@ -752,6 +754,8 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     enterEdit(
         mode == CaptureMode::File
             ? QStringLiteral("Editing image from file · Copy/Save to output")
+        : mode == CaptureMode::Code
+            ? QStringLiteral("Code image · B changes backdrop · Copy/Save to output")
             : QStringLiteral("Full screen selected · native resolution · "
                              "outer handles crop"));
   } else if (mode == CaptureMode::Window) {
@@ -2753,13 +2757,17 @@ void CaptureEditor::finish(OutputMode mode) {
     snapshotPath_.clear();
   }
 
+  const QString outputName =
+      captureMode_ == CaptureMode::Code ? QStringLiteral("Code image")
+                                        : QStringLiteral("Screenshot");
   if (mode == OutputMode::Copy)
-    sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));
+    sendCaptureNotification(
+        QStringLiteral("%1 copied to clipboard").arg(outputName));
   else if (mode == OutputMode::Save)
-    sendCaptureNotification(QStringLiteral("Screenshot saved"), saved);
+    sendCaptureNotification(QStringLiteral("%1 saved").arg(outputName), saved);
   else
-    sendCaptureNotification(QStringLiteral("Screenshot saved and copied"),
-                            saved);
+    sendCaptureNotification(
+        QStringLiteral("%1 saved and copied").arg(outputName), saved);
   close();
 }
 

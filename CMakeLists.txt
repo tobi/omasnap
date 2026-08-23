@@ -32,6 +32,8 @@ foreach(PROTOCOL_XML IN LISTS PROTOCOL_XMLS)
 endforeach()
 
 add_library(omasnap-core STATIC
+  src/code-image.cpp
+  src/code-image.hpp
   src/cli-path.cpp
   src/cli-path.hpp
   src/icons.cpp
@@ -82,6 +84,8 @@ target_link_libraries(omasnap PRIVATE omasnap-core LayerShellQt::Interface)
 
 if(BUILD_TESTING)
 qt_add_executable(omasnap-smoke
+  tests/code-image-smoke.cpp
+  tests/code-image-smoke.hpp
   tests/editor-smoke.cpp
   tests/clipboard-smoke.cpp
   tests/clipboard-smoke.hpp

@@ -1007,7 +1007,8 @@ bool copyImageToClipboard(const QImage &image, QString &error) {
   return copyToWaylandClipboard(QStringLiteral("image/png"), png, error);
 }
 
-bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
+bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error,
+                 const QString &outputName) {
   if (image.isNull() || mode == QuickOutputMode::None) {
     error = QStringLiteral("Could not prepare screenshot snapshot");
     return false;
@@ -1015,7 +1016,8 @@ bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
   if (mode == QuickOutputMode::Copy) {
     if (!copyImageToClipboard(image, error))
       return false;
-    sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));
+    sendCaptureNotification(
+        QStringLiteral("%1 copied to clipboard").arg(outputName));
     return true;
   }
   const QString path = temporarySnapshotPath();
@@ -1033,13 +1035,14 @@ bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
     if (saved.isEmpty())
       return false;
     if (mode == QuickOutputMode::Save)
-      sendCaptureNotification(QStringLiteral("Screenshot saved"), saved);
+      sendCaptureNotification(QStringLiteral("%1 saved").arg(outputName), saved);
     else
-      sendCaptureNotification(QStringLiteral("Screenshot saved and copied"),
-                              saved);
+      sendCaptureNotification(
+          QStringLiteral("%1 saved and copied").arg(outputName), saved);
   } else {
     QFile::remove(path);
-    sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));
+    sendCaptureNotification(
+        QStringLiteral("%1 copied to clipboard").arg(outputName));
   }
   return true;
 }

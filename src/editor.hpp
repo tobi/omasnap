@@ -34,7 +34,7 @@ class InlineTextEdit;
 class CaptureEditor final : public QWidget {
   Q_OBJECT
 public:
-  enum class CaptureMode { Region, Window, Fullscreen, File };
+  enum class CaptureMode { Region, Window, Fullscreen, File, Code };
 
   explicit CaptureEditor(CaptureData capture,
                          CaptureMode mode = CaptureMode::Region,
@@ -344,6 +344,7 @@ private:
   void updatePointerCursor();
 
   CaptureData capture_;
+  CaptureMode captureMode_ = CaptureMode::Region;
   // Untouched capture, kept alongside cuts_ so cuts can be recomposed from
   // scratch (undo/redo, in-progress cut preview) without accumulating error.
   QImage pristineSource_;

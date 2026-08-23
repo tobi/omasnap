@@ -2,6 +2,7 @@
  */
 #include "capture.hpp"
 #include "cli-path.hpp"
+#include "code-image-smoke.hpp"
 #include "clipboard-smoke.hpp"
 #include "cut-smoke.hpp"
 #include "editor.hpp"
@@ -4715,6 +4716,10 @@ int main(int argc, char **argv) {
   if (!runPositionalImageTargetCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 70;
+  }
+  if (!runCodeImageChecks(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 125;
   }
   if (!runTemporarySnapshotChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
