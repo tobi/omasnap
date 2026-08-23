@@ -11,6 +11,7 @@
 #include <QEnterEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QGuiApplication>
 #include <QImage>
 #include <QJsonDocument>
@@ -24,6 +25,7 @@
 #include <QPainterPath>
 #include <QProcess>
 #include <QScreen>
+#include <QTimer>
 #include <QWidget>
 #include <QWindow>
 
@@ -149,6 +151,8 @@ protected:
       paintThumbnail(painter, index);
     if (presentation_ == ShelfPresentation::Expanded)
       paintExpandedHandle(painter);
+    if (!toast_.isEmpty())
+      paintToast(painter);
   }
 
   void mousePressEvent(QMouseEvent *event) override {
@@ -183,8 +187,12 @@ protected:
       presentation_ = ShelfPresentation::Stacked;
     } else {
       const int index = captureShelfItemAt(layout_, event->position());
-      if (index >= 0)
-        annotateItem(index);
+      if (index >= 0) {
+        if (copyButtonRect(index).contains(event->position()))
+          copyItem(index);
+        else
+          annotateItem(index);
+      }
     }
     swipeOffset_ = 0;
     applyLayout();
@@ -270,12 +278,18 @@ private:
     if (presentation_ == ShelfPresentation::Expanded && hoveredItem_ == index)
       paintActionButton(painter, annotateButtonRect(index),
                         QStringLiteral("edit"));
+    if (presentation_ == ShelfPresentation::Expanded && hoveredItem_ == index)
+      paintActionButton(painter, copyButtonRect(index), QStringLiteral("copy"));
   }
 
   QRectF annotateButtonRect(int index) const {
     const QRectF frame = layout_.thumbnails.at(index);
     return QRectF(frame.left() + kActionInset, frame.top() + kActionInset,
                   kActionSize, kActionSize);
+  }
+
+  QRectF copyButtonRect(int index) const {
+    return annotateButtonRect(index).translated(kActionSize + 4, 0);
   }
 
   void paintActionButton(QPainter &painter, const QRectF &button,
@@ -318,6 +332,36 @@ private:
                    {QStringLiteral("--edit-shelf"), path});
   }
 
+  void copyItem(int index) {
+    if (index < 0 || index >= items_.size())
+      return;
+    QString error;
+    showToast(copyPngFileToClipboard(items_.at(index).path, error)
+                  ? QStringLiteral("Copied to clipboard")
+                  : error);
+  }
+
+  void showToast(QString message) {
+    toast_ = std::move(message);
+    update();
+    QTimer::singleShot(1200, this, [this] {
+      toast_.clear();
+      update();
+    });
+  }
+
+  void paintToast(QPainter &painter) const {
+    const QFontMetrics metrics(painter.font());
+    const qreal width = metrics.horizontalAdvance(toast_) + 28;
+    const QRectF pill((this->width() - width) / 2.0, this->height() - 36, width,
+                      26);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(12, 12, 16, 220));
+    painter.drawRoundedRect(pill, 13, 13);
+    painter.setPen(QColor(245, 245, 247));
+    painter.drawText(pill, Qt::AlignCenter, toast_);
+  }
+
   void paintExpandedHandle(QPainter &painter) const {
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(18, 18, 22, 185));
@@ -344,6 +388,7 @@ private:
   bool dragging_ = false;
   int hoveredItem_ = -1;
   QProcess *editingProcess_ = nullptr;
+  QString toast_;
 };
 
 class ShelfServer final : public QObject {
