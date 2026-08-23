@@ -94,6 +94,13 @@ QScreen *screenByName(const QString &name) {
   return QGuiApplication::primaryScreen();
 }
 
+void removeOwnedShelfSnapshot(const QString &path) {
+  if (!isShelfSnapshotPath(path))
+    return;
+  QFile::remove(operationLogPath(path));
+  QFile::remove(path);
+}
+
 class CaptureShelfWindow final : public QWidget {
 public:
   CaptureShelfWindow() {
@@ -101,6 +108,11 @@ public:
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
     setMouseTracking(true);
+  }
+
+  ~CaptureShelfWindow() override {
+    for (const Item &item : std::as_const(items_))
+      removeOwnedShelfSnapshot(item.path);
   }
 
   void setLayerWindow(LayerShellQt::Window *layer) {
@@ -120,8 +132,10 @@ public:
         items_.removeAt(index);
     }
     items_.prepend({path, std::move(image)});
-    while (items_.size() > captureShelfMaximumItems())
+    while (items_.size() > captureShelfMaximumItems()) {
+      removeOwnedShelfSnapshot(items_.constLast().path);
       items_.removeLast();
+    }
 
     presentation_ = ShelfPresentation::Stacked;
     hoveredItem_ = 0;
@@ -188,7 +202,9 @@ protected:
     } else {
       const int index = captureShelfItemAt(layout_, event->position());
       if (index >= 0) {
-        if (copyButtonRect(index).contains(event->position()))
+        if (deleteButtonRect(index).contains(event->position()))
+          removeItem(index);
+        else if (copyButtonRect(index).contains(event->position()))
           copyItem(index);
         else
           annotateItem(index);
@@ -280,6 +296,9 @@ private:
                         QStringLiteral("edit"));
     if (presentation_ == ShelfPresentation::Expanded && hoveredItem_ == index)
       paintActionButton(painter, copyButtonRect(index), QStringLiteral("copy"));
+    if (presentation_ == ShelfPresentation::Expanded && hoveredItem_ == index)
+      paintActionButton(painter, deleteButtonRect(index),
+                        QStringLiteral("close"));
   }
 
   QRectF annotateButtonRect(int index) const {
@@ -290,6 +309,12 @@ private:
 
   QRectF copyButtonRect(int index) const {
     return annotateButtonRect(index).translated(kActionSize + 4, 0);
+  }
+
+  QRectF deleteButtonRect(int index) const {
+    const QRectF frame = layout_.thumbnails.at(index);
+    return QRectF(frame.right() - kActionInset - kActionSize,
+                  frame.top() + kActionInset, kActionSize, kActionSize);
   }
 
   void paintActionButton(QPainter &painter, const QRectF &button,
@@ -339,6 +364,21 @@ private:
     showToast(copyPngFileToClipboard(items_.at(index).path, error)
                   ? QStringLiteral("Copied to clipboard")
                   : error);
+  }
+
+  void removeItem(int index) {
+    if (index < 0 || index >= items_.size())
+      return;
+    const QString path = items_.at(index).path;
+    items_.removeAt(index);
+    removeOwnedShelfSnapshot(path);
+    hoveredItem_ = items_.isEmpty()
+                       ? -1
+                       : std::min(index, static_cast<int>(items_.size()) - 1);
+    if (items_.isEmpty())
+      presentation_ = ShelfPresentation::Stacked;
+    applyLayout();
+    update();
   }
 
   void showToast(QString message) {
