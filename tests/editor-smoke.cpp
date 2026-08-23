@@ -7374,11 +7374,11 @@ bool runAreaLastRegionSmoke(QApplication &application, QString &error) {
 bool runPostCaptureHandoffSmoke(QApplication &application, QString &error) {
   CaptureData capture;
   capture.monitor.name = QStringLiteral("TEST");
-  capture.monitor.geometry = QRect(0, 0, 200, 150);
-  capture.monitor.pixelSize = QSize(200, 150);
+  capture.monitor.geometry = QRect(0, 0, 800, 600);
+  capture.monitor.pixelSize = QSize(800, 600);
   capture.monitor.scale = 1.0;
-  capture.previewSize = QSize(200, 150);
-  capture.source = QImage(200, 150, QImage::Format_ARGB32_Premultiplied);
+  capture.previewSize = QSize(800, 600);
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
   capture.source.fill(QColor(QStringLiteral("#365070")));
 
   QImage handedOff;
@@ -7391,12 +7391,12 @@ bool runPostCaptureHandoffSmoke(QApplication &application, QString &error) {
   editor.resize(capture.previewSize);
   editor.show();
   application.processEvents();
-  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(20, 30));
-  QTest::mouseMove(&editor, QPoint(140, 100), 10);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 150));
+  QTest::mouseMove(&editor, QPoint(500, 400), 10);
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(140, 100));
+                      QPoint(500, 400));
   application.processEvents();
-  if (handedOff.size() != QSize(120, 70) || editor.isVisible()) {
+  if (handedOff.size() != QSize(400, 250) || editor.isVisible()) {
     error = QStringLiteral("Post-capture handoff did not receive the region");
     return false;
   }
