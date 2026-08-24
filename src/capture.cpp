@@ -1,6 +1,7 @@
 /** @fileoverview Captures, renders, saves, and shares screenshots. */
 #include "capture.hpp"
 #include "output-config.hpp"
+#include "startup-timing.hpp"
 
 #include <QBuffer>
 #include <QCoreApplication>
@@ -743,6 +744,7 @@ void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
 }
 
 bool probeFocusedMonitor(MonitorInfo &monitor, QString &error) {
+  StartupTimingScope timing("hyprctl monitors + parse");
   const ProcessResult monitors =
       runProcess(QStringLiteral("hyprctl"),
                  {QStringLiteral("monitors"), QStringLiteral("-j")});
@@ -757,6 +759,7 @@ bool probeFocusedMonitor(MonitorInfo &monitor, QString &error) {
 
 bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
                           bool includeWindows, QString &error) {
+  StartupTimingScope timing("monitor pixels + window discovery");
   capture.monitor = monitor;
   const QRect geometry = capture.monitor.geometry;
   if (geometry.size().isEmpty()) {
@@ -772,6 +775,7 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
     clients.start(QStringLiteral("hyprctl"),
                   {QStringLiteral("clients"), QStringLiteral("-j")});
     clients.closeWriteChannel();
+    startupTimingMark("hyprctl clients launched");
   }
 
   const QString testCapture = qEnvironmentVariable("OMASNAP_TEST_CAPTURE");
@@ -787,6 +791,7 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
       error = QStringLiteral("Screen capture failed: %1").arg(error);
     return false;
   }
+  startupTimingMark("output pixels available");
 
   capture.previewSize = geometry.size();
 
@@ -796,6 +801,7 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
     else if (clients.exitCode() == 0)
       capture.windows =
           parseWindows(clients.readAllStandardOutput(), capture.monitor);
+    startupTimingMark("hyprctl clients collected");
   }
   return true;
 }

@@ -4,6 +4,7 @@
 #include "instance-lock.hpp"
 #include "pin.hpp"
 #include "recent-snaps.hpp"
+#include "startup-timing.hpp"
 
 #include <LayerShellQt/Window>
 
@@ -94,12 +95,14 @@ private:
 } // namespace
 
 int main(int argc, char **argv) {
+  startupTimingMark("entered main");
   QCoreApplication::setApplicationName(QStringLiteral("omasnap"));
   QCoreApplication::setApplicationVersion(QString::fromLatin1(OMASNAP_VERSION));
   QCoreApplication::setOrganizationName(QStringLiteral("Omarchy"));
   qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
   QGuiApplication::setDesktopFileName(QStringLiteral("omasnap"));
   QApplication application(argc, argv);
+  startupTimingMark("QApplication constructed");
 
   // A stitched scroll capture (or any tall pinned image) exceeds Qt's default
   // 256 MB image-decode allocation limit; lift it so --file/--pin can open it.
@@ -170,6 +173,7 @@ int main(int argc, char **argv) {
                      "path of an image file to edit."),
       QStringLiteral("[target]"));
   parser.process(application);
+  startupTimingMark("command line parsed");
 
   QString filePath = parser.value(fileOption);
   const bool clipboardInput = parser.isSet(clipboardOption);
@@ -252,11 +256,14 @@ int main(int argc, char **argv) {
         << "Quick output options cannot be combined with an image input";
     return 2;
   }
+  startupTimingMark("options resolved");
   if (!loadCaptureFonts())
     return 1;
+  startupTimingMark("capture font loaded");
   application.setQuitOnLastWindowClosed(true);
 
   const QString runtime = secureRuntimeDirectory();
+  startupTimingMark("runtime directory ready");
   if (runtime.isEmpty()) {
     qCritical() << "Could not create private runtime directory";
     return 1;
@@ -269,6 +276,7 @@ int main(int argc, char **argv) {
   const InstanceLockResult lockResult = acquireInstanceLock(
       instanceLock, editingImage ? InstanceMode::EditFile
                                  : InstanceMode::Capture);
+  startupTimingMark("instance lock acquired");
   if (lockResult.signalledPid != 0)
     qInfo().noquote() << QStringLiteral("Asked the running omasnap (pid %1) to "
                                         "quit")
@@ -324,6 +332,8 @@ int main(int argc, char **argv) {
     sendCaptureNotification(QStringLiteral("Screenshot failed: %1").arg(error));
     return 1;
   }
+  startupTimingMark(editingImage ? "input image prepared"
+                                 : "focused monitor probed");
 
   // Grab the output before the layer exists. ext-image-copy-capture waits for
   // a composited frame, so mapping the dim overlay first photographs the veil.
@@ -337,6 +347,8 @@ int main(int argc, char **argv) {
     sendCaptureNotification(QStringLiteral("Screenshot failed: %1").arg(error));
     return 1;
   }
+  startupTimingMark(editingImage ? "pixel capture skipped"
+                                 : "monitor pixels captured");
 
   if (instantFullscreenOutput) {
     QString outputError;
@@ -375,6 +387,7 @@ int main(int argc, char **argv) {
 
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
                        restoredLog);
+  startupTimingMark("CaptureEditor constructed");
   editor.setScreen(targetScreen);
   editor.setGeometry(targetScreen->geometry());
   editor.winId();
@@ -398,8 +411,10 @@ int main(int argc, char **argv) {
       LayerShellQt::Window::KeyboardInteractivityExclusive);
   layerWindow->setActivateOnShow(true);
   editor.setLayerWindow(layerWindow);
+  startupTimingMark("layer surface configured");
   editor.show();
   editor.setFocus(Qt::ActiveWindowFocusReason);
+  startupTimingMark("show requested; entering event loop");
 
   return application.exec();
 }

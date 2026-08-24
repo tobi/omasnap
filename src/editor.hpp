@@ -355,6 +355,8 @@ private:
   /// Opens the inline editor at `point` with room for `lineCapacity` lines:
   /// Enter moves to the next line while there is room, and commits on the
   /// last one; Shift+Enter always adds a line's room.
+  void ensureTextEditor();
+  [[nodiscard]] bool textEditing() const;
   void beginText(const QPointF &point, int annotationIndex = -1,
                  int lineCapacity = 1);
   void chooseWindow(int index);
@@ -559,8 +561,7 @@ private:
   QImage redactionBase_;
   QSize redactionBaseSize_;
   bool redactionBaseStale_ = true;
-  // Select-phase capture scaled once per source, widget size, and DPR.
-  QPixmap backdrop_;
+  // Select-phase capture scaled and dimmed once per source, widget size, and DPR.
   QPixmap dimmedBackdrop_;
   QSize backdropSize_;
   qreal backdropRatio_ = 0.0;
@@ -584,6 +585,7 @@ private:
   QFutureWatcher<CaptureJob> captureWatcher_;
   bool capturePending_ = false;
   bool captureStarted_ = false;
+  bool firstPaintReported_ = false;
   CaptureMode pendingMode_ = CaptureMode::Region;
   // Background render for --pin.
   QFutureWatcher<QImage> pinWatcher_;

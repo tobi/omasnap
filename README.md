@@ -407,6 +407,16 @@ replay, vector movement and scaling, text editing, OCR, native-DPI output,
 endpoint-only line selection, external crop handles, and the native-pixel
 measurement readout on a scaled monitor.
 
+For live launch profiling, the binary has an opt-in millisecond trace from `main()`
+through the first completed overlay paint:
+
+```bash
+OMASNAP_PROFILE_STARTUP=1 ./build/omasnap 2>startup.log
+```
+
+The trace also breaks native capture into Wayland registry, buffer allocation, frame wait,
+and pixel handoff stages. It is completely silent by default.
+
 `.github/workflows/build-linux.yml` runs the same `make check` build, interaction smoke,
 and available static-analysis checks in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux
 artifact. A `v*` tag also attaches that artifact to the corresponding GitHub release.

@@ -1,5 +1,6 @@
 /** @fileoverview Captures native monitor outputs through Wayland protocols. */
 #include "capture.hpp"
+#include "startup-timing.hpp"
 
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
@@ -262,6 +263,7 @@ bool dispatchUntil(CaptureState &state, const bool *done, int timeoutMs,
 }
 
 bool createShmBuffer(CaptureState &state, QString &error) {
+  StartupTimingScope timing("allocate capture shm buffer");
   constexpr uint32_t formats[]{WL_SHM_FORMAT_ARGB8888, WL_SHM_FORMAT_XRGB8888,
                                WL_SHM_FORMAT_ABGR8888, WL_SHM_FORMAT_XBGR8888};
   const auto format = std::ranges::find_first_of(formats, state.shmFormats);
@@ -307,7 +309,9 @@ bool createShmBuffer(CaptureState &state, QString &error) {
     error = QStringLiteral("Could not map surface capture memory");
     return false;
   }
-  std::memset(state.memory, 0, state.memorySize);
+  // A newly extended shm object reads as zero, and the first frame is captured
+  // with full-buffer damage. Pre-clearing here only faults and writes every
+  // page once before the compositor immediately overwrites it.
 
   state.pool = wl_shm_create_pool(state.shm, state.fd,
                                   static_cast<int32_t>(state.memorySize));
@@ -345,6 +349,7 @@ void destroyShmBuffer(CaptureState &state) {
 
 /** Captures one frame from the open session into the shm buffer. */
 bool captureFrame(CaptureState &state, QString &error, int timeoutMs) {
+  StartupTimingScope timing("request + await composited frame");
   if (!state.buffer) {
     error = QStringLiteral("No capture buffer is available");
     return false;
@@ -367,29 +372,78 @@ bool captureFrame(CaptureState &state, QString &error, int timeoutMs) {
   return done && state.frameReady;
 }
 
-QImage copyCapturedImage(const CaptureState &state) {
-  QImage::Format imageFormat = QImage::Format_Invalid;
-  switch (state.bufferFormat) {
+QImage::Format capturedImageFormat(uint32_t format) {
+  switch (format) {
   case WL_SHM_FORMAT_ARGB8888:
-    imageFormat = QImage::Format_ARGB32_Premultiplied;
-    break;
+    return QImage::Format_ARGB32_Premultiplied;
   case WL_SHM_FORMAT_XRGB8888:
-    imageFormat = QImage::Format_RGB32;
-    break;
+    return QImage::Format_RGB32;
   case WL_SHM_FORMAT_ABGR8888:
-    imageFormat = QImage::Format_RGBA8888_Premultiplied;
-    break;
+    return QImage::Format_RGBA8888_Premultiplied;
   case WL_SHM_FORMAT_XBGR8888:
-    imageFormat = QImage::Format_RGBX8888;
-    break;
+    return QImage::Format_RGBX8888;
   default:
-    return {};
+    return QImage::Format_Invalid;
   }
+}
+
+QImage copyCapturedImage(const CaptureState &state) {
+  StartupTimingScope timing("copy captured pixels");
+  const QImage::Format imageFormat = capturedImageFormat(state.bufferFormat);
+  if (imageFormat == QImage::Format_Invalid)
+    return {};
   const int stride = static_cast<int>(state.bufferWidth * 4);
   return QImage(static_cast<uchar *>(state.memory),
                 static_cast<int>(state.bufferWidth),
                 static_cast<int>(state.bufferHeight), stride, imageFormat)
       .copy();
+}
+
+struct CapturedMapping {
+  void *memory = MAP_FAILED;
+  std::size_t size = 0;
+};
+
+void unmapCapturedImage(void *context) {
+  const std::unique_ptr<CapturedMapping> mapping(
+      static_cast<CapturedMapping *>(context));
+  if (mapping->memory != MAP_FAILED)
+    munmap(mapping->memory, mapping->size);
+}
+
+/** Transfers a one-shot capture's mmap into QImage instead of copying the
+ * entire output. Persistent OutputCapture sessions use copyCapturedImage()
+ * because their Wayland buffer is reused for later frames. For an untransformed
+ * output the mapping remains the image's storage until its last shallow copy is
+ * dropped; transformed outputs detach while normalizing and unmap it sooner. */
+QImage takeCapturedImage(CaptureState &state) {
+  StartupTimingScope timing("take captured pixel buffer");
+  const QImage::Format imageFormat = capturedImageFormat(state.bufferFormat);
+  if (imageFormat == QImage::Format_Invalid || state.memory == MAP_FAILED)
+    return {};
+
+  if (state.buffer) {
+    wl_buffer_destroy(state.buffer);
+    state.buffer = nullptr;
+  }
+  if (state.pool) {
+    wl_shm_pool_destroy(state.pool);
+    state.pool = nullptr;
+  }
+  if (state.fd >= 0) {
+    close(state.fd);
+    state.fd = -1;
+  }
+
+  auto *mapping = new CapturedMapping{state.memory, state.memorySize};
+  QImage image(static_cast<uchar *>(state.memory),
+               static_cast<int>(state.bufferWidth),
+               static_cast<int>(state.bufferHeight),
+               static_cast<int>(state.bufferWidth * 4), imageFormat,
+               unmapCapturedImage, mapping);
+  state.memory = MAP_FAILED;
+  state.memorySize = 0;
+  return image;
 }
 } // namespace capture_detail
 
@@ -429,6 +483,7 @@ QImage normalizeWaylandCapture(const QImage &image, std::uint32_t transform) {
  *  stitched, and a painted cursor would become a moving artefact. */
 static bool openCaptureSession(CaptureState &state, QString &error,
                                const QString &stoppedError) {
+  StartupTimingScope timing("open capture session + constraints");
   state.session = ext_image_copy_capture_manager_v1_create_session(
       state.captureManager, state.source, 0);
   ext_image_copy_capture_session_v1_add_listener(state.session,
@@ -456,7 +511,7 @@ static bool captureCurrentSource(CaptureState &state, QImage &image, QString &er
       error = failedError;
     return false;
   }
-  const QImage captured = copyCapturedImage(state);
+  QImage captured = takeCapturedImage(state);
   if (captured.isNull()) {
     error = decodeError;
     return false;
@@ -471,6 +526,7 @@ static bool captureCurrentSource(CaptureState &state, QImage &image, QString &er
 
 /** Connects to the display and binds the output-capture globals. */
 static bool connectOutputCaptureDisplay(CaptureState &state, QString &error) {
+  StartupTimingScope timing("Wayland connect + registry roundtrips");
   state.display = wl_display_connect(nullptr);
   if (!state.display) {
     error = QStringLiteral("Could not connect to Wayland for output capture");
@@ -493,6 +549,7 @@ static bool connectOutputCaptureDisplay(CaptureState &state, QString &error) {
 
 bool captureOutputSurface(const MonitorInfo &monitor, QImage &image,
                           QString &error) {
+  StartupTimingScope timing("native output capture total");
   if (monitor.name.isEmpty()) {
     error = QStringLiteral("Focused monitor has no output name");
     return false;

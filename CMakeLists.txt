@@ -66,6 +66,8 @@ add_library(omasnap-core STATIC
   src/scroll-capture.hpp
   src/scroll-inject.cpp
   src/scroll-inject.hpp
+  src/startup-timing.cpp
+  src/startup-timing.hpp
   ${PROTOCOL_SOURCES}
   src/editor.cpp
   src/editor.hpp
