@@ -5967,12 +5967,78 @@ int main(int argc, char **argv) {
     QTest::mouseMove(&quickEditor, QPoint(650, 470), 20);
     QTest::mouseRelease(&quickEditor, Qt::LeftButton, Qt::NoModifier,
                         QPoint(650, 470));
+    if (!quickEditor.exportingForTest() || quickEditor.editingForTest())
+      return 74;
     quickEditor.waitForExport();
     const QStringList files =
         QDir(savedRoot).entryList({QStringLiteral("*.png")}, QDir::Files);
     if (quickEditor.isVisible() || files.size() != 1 ||
         QImage(QDir(savedRoot).filePath(files.constFirst())).isNull())
-      return 74;
+      return 75;
+  }
+
+  {
+    const QString blockedRoot =
+        QDir(outputRoot).filePath(QStringLiteral("blocked-output"));
+    QFile blocker(blockedRoot);
+    if (!blocker.open(QIODevice::WriteOnly | QIODevice::Truncate))
+      return 76;
+    blocker.write("not a directory");
+    blocker.close();
+    qputenv("OMASNAP_SCREENSHOT_DIR", blockedRoot.toUtf8());
+    const auto restoreOutput = qScopeGuard([&] {
+      QFile::remove(blockedRoot);
+      qputenv("OMASNAP_SCREENSHOT_DIR", savedRoot.toUtf8());
+    });
+
+    CaptureEditor quickEditor(capture, CaptureEditor::CaptureMode::Region,
+                              QuickOutputMode::Save);
+    quickEditor.resize(800, 600);
+    quickEditor.show();
+    application.processEvents();
+    QTest::mousePress(&quickEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 100));
+    QTest::mouseMove(&quickEditor, QPoint(650, 470), 20);
+    QTest::mouseRelease(&quickEditor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(650, 470));
+    if (!quickEditor.exportingForTest())
+      return 77;
+    quickEditor.waitForExport();
+    if (!quickEditor.isVisible() || !quickEditor.editingForTest() ||
+        quickEditor.exportingForTest() ||
+        !quickEditor.statusForTest().contains(QStringLiteral("directory"),
+                                              Qt::CaseInsensitive))
+      return 78;
+    quickEditor.close();
+  }
+
+  {
+    const QString scrollRoot =
+        QDir(outputRoot).filePath(QStringLiteral("scroll-quick-output"));
+    QDir(scrollRoot).removeRecursively();
+    qputenv("OMASNAP_SCREENSHOT_DIR", scrollRoot.toUtf8());
+    const auto restoreOutput = qScopeGuard(
+        [&] { qputenv("OMASNAP_SCREENSHOT_DIR", savedRoot.toUtf8()); });
+    QImage stitched(48, 96, QImage::Format_ARGB32_Premultiplied);
+    stitched.fill(QColor(QStringLiteral("#778899")));
+    CaptureEditor quickEditor(capture, CaptureEditor::CaptureMode::Region,
+                              QuickOutputMode::Save);
+    quickEditor.resize(800, 600);
+    quickEditor.show();
+    application.processEvents();
+    quickEditor.adoptStitchedForTest(stitched);
+    if (!quickEditor.exportingForTest() || quickEditor.editingForTest())
+      return 79;
+    quickEditor.waitForExport();
+    const QStringList files =
+        QDir(scrollRoot).entryList({QStringLiteral("*.png")}, QDir::Files);
+    const QImage saved = files.size() == 1
+                             ? QImage(QDir(scrollRoot).filePath(files.constFirst()))
+                             : QImage();
+    if (quickEditor.isVisible() || files.size() != 1 || saved.size() != QSize(48, 96) ||
+        saved.pixelColor(0, 0) != QColor(QStringLiteral("#778899")))
+      return 80;
+    QDir(scrollRoot).removeRecursively();
   }
   QDir(savedRoot).removeRecursively();
 

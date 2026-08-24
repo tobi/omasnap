@@ -694,7 +694,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
             case CaptureMode::Fullscreen:
               selection_ = QRectF(QPointF(), capture_.previewSize);
               editedKind_ = SelectTab::Fullscreen;
-              enterEdit(QStringLiteral(
+              enterSelectedCapture(QStringLiteral(
                   "Full screen selected · native resolution · outer handles "
                   "crop"));
               break;
@@ -764,7 +764,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     const bool veryLong =
         capture_.previewSize.width() > stitch::kWidelyOpenableEdge ||
         capture_.previewSize.height() > stitch::kWidelyOpenableEdge;
-    enterEdit(
+    const QString editStatus =
         veryLong
             ? QStringLiteral("Very long capture (%1 × %2) · edits and saves "
                              "here as usual, but many apps cannot open images "
@@ -774,7 +774,11 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
         : mode == CaptureMode::File
             ? QStringLiteral("Editing image from file · Copy/Save to output")
             : QStringLiteral("Full screen selected · native resolution · "
-                             "outer handles crop"));
+                             "outer handles crop");
+    if (mode == CaptureMode::File)
+      enterEdit(editStatus);
+    else
+      enterSelectedCapture(editStatus);
   } else if (mode == CaptureMode::Window) {
     windowMode_ = true;
     hoveredWindow_ = windowAt(cursor_);
@@ -2475,20 +2479,38 @@ void CaptureEditor::enterEdit(QString status) {
   viewOffset_ = {};
   setStatus(std::move(status));
   updatePointerCursor();
-  if (quickOutputMode_ != QuickOutputMode::None) {
-    const OutputMode output = quickOutputMode_ == QuickOutputMode::Copy
-                                  ? OutputMode::Copy
-                                  : quickOutputMode_ == QuickOutputMode::Save
-                                        ? OutputMode::Save
-                                        : OutputMode::Both;
-    finish(output);
-    return;
-  }
   const QRectF full(QPointF(), capture_.previewSize);
   if (ops_.isEmpty() && !selection_.isEmpty() && selection_ != full)
     commitCrop(selection_);
   else
     scheduleSnapshot();
+}
+
+void CaptureEditor::enterSelectedCapture(QString editStatus) {
+  if (quickOutputMode_ != QuickOutputMode::None) {
+    enterExport();
+    return;
+  }
+  enterEdit(std::move(editStatus));
+}
+
+void CaptureEditor::enterExport() {
+  if (selection_.isEmpty()) {
+    phase_ = Phase::Select;
+    setStatus(QStringLiteral("Could not output an empty selection"));
+    updatePointerCursor();
+    return;
+  }
+  phase_ = Phase::Export;
+  dragging_ = false;
+  windowMode_ = false;
+  updatePointerCursor();
+  const OutputMode output = quickOutputMode_ == QuickOutputMode::Copy
+                                ? OutputMode::Copy
+                            : quickOutputMode_ == QuickOutputMode::Save
+                                ? OutputMode::Save
+                                : OutputMode::Both;
+  finish(output);
 }
 
 void CaptureEditor::handleEscape() {
@@ -2560,7 +2582,7 @@ void CaptureEditor::chooseWindow(int index) {
   redactionBaseStale_ = true;
   windowMode_ = false;
   editedKind_ = SelectTab::Window;
-  enterEdit(QStringLiteral(
+  enterSelectedCapture(QStringLiteral(
       "Window selected · Select moves layers · wheel zooms · outer handles "
       "crop"));
 }
@@ -2903,7 +2925,12 @@ void CaptureEditor::finish(OutputMode mode) {
 void CaptureEditor::completeFinish(const FinishResult &result) {
   if (!result.error.isEmpty()) {
     busy_ = false;
-    setStatus(result.error);
+    if (phase_ == Phase::Export) {
+      quickOutputMode_ = QuickOutputMode::None;
+      enterEdit(result.error);
+    } else {
+      setStatus(result.error);
+    }
     return;
   }
   if (!snapshotPath_.isEmpty()) {
@@ -3064,6 +3091,10 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     // Esc only puts the card away; it should not also back out of the tool.
     if (key == Qt::Key_Escape)
       return;
+  }
+  if (phase_ == Phase::Export) {
+    event->accept();
+    return;
   }
   const Tool toolBefore = tool_;
   const QString statusBefore = status_;
@@ -3425,6 +3456,8 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
     return;
   }
   cursor_ = event->position();
+  if (phase_ == Phase::Export)
+    return;
   if (capturePending_)
     return;
   if (phase_ == Phase::Select) {
@@ -4461,6 +4494,10 @@ void CaptureEditor::wheelEvent(QWheelEvent *event) {
 }
 
 void CaptureEditor::updatePointerCursor() {
+  if (phase_ == Phase::Export) {
+    setCursor(Qt::WaitCursor);
+    return;
+  }
   if (phase_ == Phase::Select) {
     setCursor(windowMode_ || selectTabAt(cursor_) >= 0 ||
                       (recentsOpen_ && recentAt(cursor_) >= 0)
@@ -4643,7 +4680,7 @@ void CaptureEditor::commitRegion(const QRectF &region,
     return;
   }
   editedKind_ = SelectTab::Region;
-  enterEdit(editStatus);
+  enterSelectedCapture(editStatus);
 }
 
 void CaptureEditor::startScrollCapture(const QRect &region) {
@@ -4748,7 +4785,7 @@ void CaptureEditor::adoptImage(QImage image, OperationLog log, SelectTab kind,
   // A fresh working document: the old snapshot belonged to the screen.
   snapshotPath_.clear();
   sourceWritten_ = false;
-  enterEdit(status);
+  enterSelectedCapture(status);
 }
 
 void CaptureEditor::returnToSelect(bool windowMode) {
@@ -5087,7 +5124,7 @@ void CaptureEditor::selectFullscreen() {
   hoveredWindow_ = -1;
   selection_ = QRectF(QPointF(), capture_.previewSize);
   editedKind_ = SelectTab::Fullscreen;
-  enterEdit(QStringLiteral(
+  enterSelectedCapture(QStringLiteral(
       "Full screen selected · native resolution · outer handles crop"));
   update();
 }
@@ -5109,15 +5146,23 @@ void CaptureEditor::paintSelect(QPainter &painter) {
   refreshBackdropCache();
   painter.drawPixmap(rect(), dimmedBackdrop_);
 
+  const bool exporting = phase_ == Phase::Export;
   const bool haveHole =
-      windowMode_ ? hoveredWindow_ >= 0 && hoveredWindow_ < capture_.windows.size()
-                  : !selection_.isEmpty();
+      exporting
+          ? !selection_.isEmpty()
+          : windowMode_
+              ? hoveredWindow_ >= 0 && hoveredWindow_ < capture_.windows.size()
+              : !selection_.isEmpty();
   if (haveHole) {
+    const bool previewCoordinates =
+        windowMode_ || (exporting && editedKind_ != SelectTab::Region);
     const QRectF previewHole =
         windowMode_ ? QRectF(capture_.windows.at(hoveredWindow_).rect)
-                    : mapWidgetToPreview(selection_);
-    const QRectF destHole =
-        windowMode_ ? mapPreviewToWidget(previewHole) : selection_;
+        : previewCoordinates ? selection_
+                             : mapWidgetToPreview(selection_);
+    const QRectF destHole = previewCoordinates
+                                ? mapPreviewToWidget(previewHole)
+                                : selection_;
     painter.save();
     painter.setClipRect(destHole, Qt::IntersectClip);
     painter.drawImage(destHole, capture_.source, sourceRect(previewHole));
@@ -5133,28 +5178,33 @@ void CaptureEditor::paintSelect(QPainter &painter) {
       painter.drawRect(mapPreviewToWidget(QRectF(window.rect)));
     }
   } else if (!selection_.isEmpty()) {
+    const QRectF outline = exporting && editedKind_ != SelectTab::Region
+                               ? mapPreviewToWidget(selection_)
+                               : selection_;
     painter.setPen(QPen(Qt::white, 2));
     painter.setBrush(Qt::NoBrush);
-    painter.drawRect(selection_);
+    painter.drawRect(outline);
   }
 
-  if (!windowMode_ && !dragging_ && !recentsOpen_) {
+  if (!exporting && !windowMode_ && !dragging_ && !recentsOpen_) {
     painter.setPen(QPen(QColor(255, 255, 255, 56), 1));
     painter.drawLine(QPointF(cursor_.x(), 0), QPointF(cursor_.x(), height()));
     painter.drawLine(QPointF(0, cursor_.y()), QPointF(width(), cursor_.y()));
   }
-  paintRecents(painter);
-
-  paintSelectTabs(painter);
-  drawHotkeyLegend(painter, rect(), cursor_,
-                   {{QStringLiteral("Drag"), QStringLiteral("Area")},
-                    {QStringLiteral("Space"), QStringLiteral("Window")},
-                    {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
-                    {QStringLiteral("R"), QStringLiteral("Last region")},
-                    {QStringLiteral("S"), QStringLiteral("Scrolling region")},
-                    {QStringLiteral("Esc"), QStringLiteral("Close")}});
+  if (!exporting) {
+    paintRecents(painter);
+    paintSelectTabs(painter);
+    drawHotkeyLegend(painter, rect(), cursor_,
+                     {{QStringLiteral("Drag"), QStringLiteral("Area")},
+                      {QStringLiteral("Space"), QStringLiteral("Window")},
+                      {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
+                      {QStringLiteral("R"), QStringLiteral("Last region")},
+                      {QStringLiteral("S"), QStringLiteral("Scrolling region")},
+                      {QStringLiteral("Esc"), QStringLiteral("Close")}});
+  }
   drawStatusPill(painter, rect(), status_);
-  drawMeasureBadge(painter, rect(), cursor_, measurementText());
+  if (!exporting)
+    drawMeasureBadge(painter, rect(), cursor_, measurementText());
 }
 
 qreal selectionBoundsRadius(const Annotation &annotation, qreal inset) {
@@ -5699,8 +5749,13 @@ void CaptureEditor::paintEvent(QPaintEvent *event) {
   painter.setRenderHints(QPainter::Antialiasing |
                          QPainter::SmoothPixmapTransform |
                          QPainter::TextAntialiasing);
-  if (phase_ == Phase::Select)
+  switch (phase_) {
+  case Phase::Select:
+  case Phase::Export:
     paintSelect(painter);
-  else
+    break;
+  case Phase::Edit:
     paintEdit(painter);
+    break;
+  }
 }

@@ -130,7 +130,7 @@ public:
   };
 
 private:
-  enum class Phase { Select, Edit };
+  enum class Phase { Select, Export, Edit };
   enum class OutputMode { Copy, Save, Both };
 public:
   enum class Interaction {
@@ -273,6 +273,10 @@ public:
   [[nodiscard]] bool windowModeForTest() const { return windowMode_; }
   /// Whether the overlay is still in the select phase. Test accessor.
   [[nodiscard]] bool selectingForTest() const { return phase_ == Phase::Select; }
+  /// Whether a confirmed quick capture is being exported without showing Edit.
+  [[nodiscard]] bool exportingForTest() const { return phase_ == Phase::Export; }
+  /// Whether the annotation editor is visible. Test accessor.
+  [[nodiscard]] bool editingForTest() const { return phase_ == Phase::Edit; }
   /// Widget rect of the capture-kind tab with `label`, or null. Test accessor.
   [[nodiscard]] QRectF selectTabRectForTest(const QString &label) const {
     for (const CaptureTab &item : selectTabItems())
@@ -408,6 +412,10 @@ private:
   void duplicateSelectedAnnotation();
   [[nodiscard]] EditState editState() const;
   void enterEdit(QString status);
+  /// Routes a confirmed screen selection to quick export or the editor.
+  void enterSelectedCapture(QString editStatus);
+  /// A confirmed quick capture exports in place without exposing editor chrome.
+  void enterExport();
 public:
 
 private:
