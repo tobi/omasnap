@@ -484,6 +484,8 @@ QString backgroundName(BackgroundStyle style) {
     return QStringLiteral("Lagoon");
   case BackgroundStyle::Violet:
     return QStringLiteral("Violet");
+  case BackgroundStyle::Custom:
+    return QStringLiteral("Custom");
   }
   return {};
 }
@@ -532,11 +534,28 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   paletteConfig_ = loadPaletteConfig(defaultConfigPath());
   startupTimingMark("palette config loaded");
   customColor_ = paletteConfig_.custom;
+  backgroundConfig_ = loadBackgroundConfig(defaultConfigPath());
+  if (!backgroundConfig_.imagePath.isEmpty())
+    customBackdrop_.load(backgroundConfig_.imagePath);
   if (!log.ops.isEmpty()) {
     ops_ = std::move(log.ops);
     opIndex_ = std::clamp(log.index, 0, static_cast<int>(ops_.size()));
     nextAnnotationId_ = std::max<quint64>(log.nextId, 1);
     nextMarker_ = std::max(log.nextMarker, 1);
+  } else {
+    // A genuinely fresh capture (no restored history): seed the configured
+    // default backdrop as the first undoable operation, same as pressing B
+    // once, so undo/redo and replay need no special case for it.
+    BackgroundStyle defaultStyle = backgroundConfig_.defaultStyle;
+    if (defaultStyle == BackgroundStyle::Custom && customBackdrop_.isNull())
+      defaultStyle = BackgroundStyle::None;
+    if (defaultStyle != BackgroundStyle::None) {
+      Operation op;
+      op.type = Operation::Type::Background;
+      op.background = defaultStyle;
+      ops_.push_back(std::move(op));
+      opIndex_ = ops_.size();
+    }
   }
   setWindowTitle(QStringLiteral("Omasnap"));
   setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
@@ -2391,7 +2410,8 @@ void CaptureEditor::scheduleSnapshot() {
 }
 
 QImage CaptureEditor::renderCurrentOutput() const {
-  return renderCapture(capture_, selection_, annotations_, backgroundStyle_);
+  return renderCapture(capture_, selection_, annotations_, backgroundStyle_,
+                       customBackdrop_);
 }
 
 void CaptureEditor::startSnapshotRender() {
@@ -2460,11 +2480,12 @@ void CaptureEditor::pinSnapshot() {
   const QVector<Annotation> annotations = annotations_;
   const QRectF selection = selection_;
   const BackgroundStyle background = backgroundStyle_;
+  const QImage backdrop = customBackdrop_;
   pinWatcher_.setFuture(QtConcurrent::run(
-      [captureCopy, annotations, selection, background, path] {
+      [captureCopy, annotations, selection, background, backdrop, path] {
         PinResult result;
-        const QImage image =
-            renderCapture(captureCopy, selection, annotations, background);
+        const QImage image = renderCapture(captureCopy, selection, annotations,
+                                           background, backdrop);
         if (image.isNull() ||
             !savePinnedSnapshot(image, path, selection.size().toSize(),
                                 result.error)) {
@@ -2950,15 +2971,17 @@ void CaptureEditor::finish(OutputMode mode) {
   const QRectF selection = selection_;
   const QVector<Annotation> annotations = annotations_;
   const BackgroundStyle background = backgroundStyle_;
+  const QImage backdrop = customBackdrop_;
   const QString appSlug =
       appFilenameSlug(dominantAppClass(capture_.windows, selection_));
   finishWatcher_.setFuture(QtConcurrent::run([captureCopy, selection,
-                                              annotations, background, appSlug,
-                                              mode]() {
+                                              annotations, background, backdrop,
+                                              appSlug, mode]() {
     FinishResult result;
     result.mode = mode;
     const QImage image =
-        renderCapture(captureCopy, selection, annotations, background);
+        renderCapture(captureCopy, selection, annotations, background,
+                     backdrop);
     if (!image.isNull())
       result.thumbnail = image.scaled(kRecentThumbEdge, kRecentThumbEdge,
                                       Qt::KeepAspectRatio,
@@ -3126,8 +3149,11 @@ void CaptureEditor::handleToolbar(const QString &action) {
   } else if (action == QStringLiteral("ocr"))
     runOcr();
   else if (action == QStringLiteral("background")) {
+    // Custom only joins the cycle once its image has actually loaded, so
+    // cycling never lands on a backdrop that paints nothing.
+    const int cycleLength = customBackdrop_.isNull() ? 5 : 6;
     const auto next = static_cast<BackgroundStyle>(
-        (static_cast<int>(backgroundStyle_) + 1) % 5);
+        (static_cast<int>(backgroundStyle_) + 1) % cycleLength);
     setStatus(QStringLiteral("Backdrop: %1 · B cycles")
                   .arg(backgroundName(next)));
     commitBackground(next);
@@ -3474,8 +3500,11 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     pinSnapshot();
     return;
   } else if (event->key() == Qt::Key_B) {
+    // Custom only joins the cycle once its image has actually loaded, so
+    // cycling never lands on a backdrop that paints nothing.
+    const int cycleLength = customBackdrop_.isNull() ? 5 : 6;
     const auto next = static_cast<BackgroundStyle>(
-        (static_cast<int>(backgroundStyle_) + 1) % 5);
+        (static_cast<int>(backgroundStyle_) + 1) % cycleLength);
     setStatus(QStringLiteral("Backdrop: %1 · B cycles")
                   .arg(backgroundName(next)));
     commitBackground(next);
@@ -5367,7 +5396,9 @@ void CaptureEditor::paintEdit(QPainter &painter) {
         QRectF(0, top, width(), std::max<qreal>(1, height() - top - 58)));
   }
   const QRectF image = editImageRect();
-  const bool hasBackground = backgroundStyle_ != BackgroundStyle::None;
+  const bool hasBackground = backgroundStyle_ == BackgroundStyle::Custom
+                                  ? !customBackdrop_.isNull()
+                                  : backgroundStyle_ != BackgroundStyle::None;
   if (hasBackground) {
     const QRectF backing = image.adjusted(-28, -28, 28, 28);
     painter.setPen(Qt::NoPen);
@@ -5385,7 +5416,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
           image.adjusted(-spread, -spread + 7, spread, spread + 7), 12 + spread,
           12 + spread);
     }
-    paintCaptureBackground(painter, backing, backgroundStyle_);
+    paintCaptureBackground(painter, backing, backgroundStyle_, customBackdrop_);
   }
 
   QPainterPath clip;

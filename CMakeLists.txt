@@ -49,6 +49,8 @@ add_library(omasnap-core STATIC
   src/cut.hpp
   src/palette-config.cpp
   src/palette-config.hpp
+  src/background-config.cpp
+  src/background-config.hpp
   src/recent-snaps.cpp
   src/recent-snaps.hpp
   src/output-config.cpp

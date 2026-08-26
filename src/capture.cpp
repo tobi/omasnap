@@ -674,9 +674,26 @@ void paintDefaultLayer(QPainter &painter, const QImage &redacted,
 }
 
 void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
-                            BackgroundStyle backgroundStyle) {
+                            BackgroundStyle backgroundStyle,
+                            const QImage &customBackdrop) {
   if (backgroundStyle == BackgroundStyle::None)
     return;
+  if (backgroundStyle == BackgroundStyle::Custom) {
+    if (customBackdrop.isNull())
+      return; // configured image never loaded; behave like None
+    // Cover-fit: scale to fill `bounds` and center-crop the overhang, the
+    // same way a desktop wallpaper covers a screen of a different aspect.
+    const QSizeF imageSize(customBackdrop.size());
+    const qreal scale = std::max(bounds.width() / imageSize.width(),
+                                 bounds.height() / imageSize.height());
+    const QSizeF scaledSize = imageSize * scale;
+    const QRectF target(
+        bounds.center() -
+            QPointF(scaledSize.width(), scaledSize.height()) / 2.0,
+        scaledSize);
+    painter.drawImage(target, customBackdrop);
+    return;
+  }
 
   struct Blob {
     QPointF center;
@@ -815,7 +832,8 @@ bool captureFocusedMonitor(CaptureData &capture, bool includeWindows,
 
 QImage renderCapture(const CaptureData &capture, const QRectF &selection,
                      const QVector<Annotation> &annotations,
-                     BackgroundStyle backgroundStyle) {
+                     BackgroundStyle backgroundStyle,
+                     const QImage &customBackdrop) {
   const QRect pixels = pixelSelection(capture, selection);
   if (pixels.isEmpty())
     return {};
@@ -850,7 +868,9 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
   applyRedactions(cropped, annotations, resized ? scaleX : sourceScaleX,
                   resized ? scaleY : sourceScaleY,
                   resized ? QPointF{} : sourceOriginOffset);
-  const bool hasBackground = backgroundStyle != BackgroundStyle::None;
+  const bool hasBackground = backgroundStyle == BackgroundStyle::Custom
+                                  ? !customBackdrop.isNull()
+                                  : backgroundStyle != BackgroundStyle::None;
   const int marginX =
       hasBackground ? static_cast<int>(std::round(64.0 * scaleX)) : 0;
   const int marginY =
@@ -864,7 +884,8 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
                          QPainter::SmoothPixmapTransform |
                          QPainter::TextAntialiasing);
   if (hasBackground) {
-    paintCaptureBackground(painter, output.rect(), backgroundStyle);
+    paintCaptureBackground(painter, output.rect(), backgroundStyle,
+                           customBackdrop);
     const QRectF imageRect(marginX, marginY, cropped.width(), cropped.height());
     painter.setPen(Qt::NoPen);
     for (int layer = 24; layer > 0; --layer) {
@@ -1304,6 +1325,8 @@ bool annotationKindFromName(const QString &name, Annotation::Kind &kind) {
   return true;
 }
 
+} // namespace
+
 QString backgroundStyleName(BackgroundStyle style) {
   switch (style) {
   case BackgroundStyle::None:
@@ -1316,6 +1339,8 @@ QString backgroundStyleName(BackgroundStyle style) {
     return QStringLiteral("lagoon");
   case BackgroundStyle::Violet:
     return QStringLiteral("violet");
+  case BackgroundStyle::Custom:
+    return QStringLiteral("custom");
   }
   return QStringLiteral("none");
 }
@@ -1331,10 +1356,14 @@ bool backgroundStyleFromName(const QString &name, BackgroundStyle &style) {
     style = BackgroundStyle::Lagoon;
   else if (name == QStringLiteral("violet"))
     style = BackgroundStyle::Violet;
+  else if (name == QStringLiteral("custom"))
+    style = BackgroundStyle::Custom;
   else
     return false;
   return true;
 }
+
+namespace {
 
 QJsonObject annotationToJson(const Annotation &annotation) {
   QJsonObject object;
