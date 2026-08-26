@@ -69,11 +69,16 @@ public:
 namespace {
 constexpr std::array<qreal, 3> kTextSizes{2.0, 5.0, 9.0};
 constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
-constexpr qreal kToolbarWidth = 840;
+constexpr qreal kToolbarWidth = 870;
 // Toolbar row to the top of the image below it.
 constexpr qreal kToolbarImageGap = 18.0;
 // Tab strip's bottom edge to the toolbar row above it.
 constexpr qreal kTabToolbarGap = 8.0;
+/// Extra spacing (beyond the normal button gap) between toolbar groups
+/// (history / style / tools / actions), so the row reads as clusters rather
+/// than one flat strip. kToolbarWidth is 840 (the flat button/gap sum) plus
+/// three of these.
+constexpr qreal kToolbarGroupGap = 10;
 constexpr qreal kMinimumRedactionExtent = 5.0;
 constexpr int kBackdropDim = 143;
 
@@ -1936,11 +1941,13 @@ int CaptureEditor::windowInDirection(int current, int key) const {
   return best;
 }
 
-QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
+QVector<CaptureEditor::ToolbarButton>
+CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers) const {
   QVector<ToolbarButton> buttons;
   const qreal scale = toolbarScale(width());
   const qreal height = 36 * scale;
   const qreal gap = 4 * scale;
+  const qreal groupGap = kToolbarGroupGap * scale;
   const qreal total = kToolbarWidth * scale;
   qreal x = (width() - total) / 2.0;
   const qreal y = toolbarTop();
@@ -1951,7 +1958,28 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
                        std::move(label), std::move(tooltip), color});
     x += scaledWidth + gap;
   };
+  /// Marks the end of a logical cluster: widens the trailing gap and, when
+  /// the caller wants dividers drawn, records the gap's midpoint.
+  auto endGroup = [&]() {
+    if (groupDividers)
+      groupDividers->push_back(x - gap + groupGap / 2.0);
+    x += groupGap;
+  };
 
+  // History: undo/redo together, leading the bar.
+  add(36, QStringLiteral("undo"), {}, QStringLiteral("Undo · Ctrl+Z"));
+  add(36, QStringLiteral("redo"), {},
+      QStringLiteral("Redo · Ctrl+Shift+Z / Ctrl+Y"));
+  endGroup();
+
+  // Style: canvas backdrop and annotation color.
+  add(36, QStringLiteral("background"), {},
+      QStringLiteral("Cycle backdrop · B"));
+  add(36, QStringLiteral("palette"), {}, QStringLiteral("Annotation color"),
+      annotationColor());
+  endGroup();
+
+  // Tools: everything that acts on the image via the cursor.
   add(36, QStringLiteral("tool-select"), {},
       QStringLiteral("Select/move · V · Ctrl+wheel zoom · outer handles crop"));
   add(36, QStringLiteral("tool-arrow"), {},
@@ -1993,15 +2021,11 @@ QVector<CaptureEditor::ToolbarButton> CaptureEditor::toolbarButtons() const {
           .arg(QString::fromLatin1(
               kTextSizeNames.at(static_cast<std::size_t>(textSizeIndex_))))
           .arg(textBackgroundName(textBackground_)));
-  add(36, QStringLiteral("palette"), {}, QStringLiteral("Annotation color"),
-      annotationColor());
   add(36, QStringLiteral("tool-ocr"), {},
       QStringLiteral("Copy all text in the image · O"));
-  add(36, QStringLiteral("background"), {},
-      QStringLiteral("Cycle backdrop · B"));
-  add(36, QStringLiteral("undo"), {}, QStringLiteral("Undo · Ctrl+Z"));
-  add(36, QStringLiteral("redo"), {},
-      QStringLiteral("Redo · Ctrl+Shift+Z / Ctrl+Y"));
+  endGroup();
+
+  // Actions: pin and finish/exit the capture.
   add(36, QStringLiteral("pin"), {},
       QStringLiteral("Pin on screen · P · Ctrl+C on the pin copies it"));
   add(36, QStringLiteral("copy"), {}, QStringLiteral("Copy only · Ctrl+C"));
@@ -5723,7 +5747,17 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   buttonFont.setPixelSize(11);
   buttonFont.setBold(true);
   painter.setFont(buttonFont);
-  const QVector<ToolbarButton> buttons = toolbarButtons();
+  QVector<qreal> toolbarDividers;
+  const QVector<ToolbarButton> buttons = toolbarButtons(&toolbarDividers);
+  if (!toolbarDividers.isEmpty()) {
+    const qreal scale = toolbarScale(width());
+    const qreal barHeight = 36 * scale;
+    const qreal barY = toolbarTop();
+    painter.setPen(QPen(QColor(255, 255, 255, 30), 1));
+    for (const qreal dividerX : std::as_const(toolbarDividers))
+      painter.drawLine(QPointF(dividerX, barY + 6),
+                       QPointF(dividerX, barY + barHeight - 6));
+  }
   const ToolbarButton *hoveredButton = nullptr;
   for (const ToolbarButton &button : buttons) {
     const bool selected =

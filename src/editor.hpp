@@ -385,7 +385,12 @@ private:
   [[nodiscard]] QRectF mapPreviewToWidget(const QRectF &previewRect) const;
   [[nodiscard]] int windowAt(const QPointF &position) const;
   [[nodiscard]] int windowInDirection(int current, int key) const;
-  [[nodiscard]] QVector<ToolbarButton> toolbarButtons() const;
+  /// Toolbar buttons laid out left to right in their logical groups
+  /// (history, style, tools, actions). When `groupDividers` is non-null, the
+  /// midpoint x of each gap between groups is appended to it, in widget
+  /// space, for the divider lines drawn between clusters.
+  [[nodiscard]] QVector<ToolbarButton>
+  toolbarButtons(QVector<qreal> *groupDividers = nullptr) const;
   [[nodiscard]] QColor annotationColor() const;
   [[nodiscard]] QLineF creationSpan(const QPointF &rawEnd) const;
   [[nodiscard]] QPointF
