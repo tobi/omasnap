@@ -7089,6 +7089,22 @@ bool runSelectTabsSmoke(QApplication &application, QString &error) {
                              "panel up");
       return false;
     }
+    // Region and Scrolling Region frame the same rectangle, so switching
+    // between them keeps it: the frame drawn for the scroll panel is the
+    // region that gets captured.
+    if (!clickOn(scrollEditor, QStringLiteral("REGION")) ||
+        !scrollEditor.editingForTest() ||
+        scrollEditor.renderCurrentOutput().size() != QSize(400, 300)) {
+      error = QStringLiteral("Region tab did not carry the scroll frame over");
+      return false;
+    }
+    // And back again: the region just captured frames the scroll panel.
+    if (!clickOn(scrollEditor, QStringLiteral("SCROLLING REGION")) ||
+        !scrollEditor.scrollPanelActiveForTest()) {
+      error = QStringLiteral("Scrolling Region tab did not carry the region "
+                             "over");
+      return false;
+    }
     QTest::keyClick(QApplication::focusWidget(), Qt::Key_Escape);
     application.processEvents();
     if (scrollEditor.scrollPanelActiveForTest() ||

@@ -5184,8 +5184,15 @@ int CaptureEditor::selectTabAt(const QPointF &position) const {
 }
 
 void CaptureEditor::activateSelectTab(SelectTab tab) {
-  if (scrollPanel_)
+  // A frame drawn for a scrolling capture is the same rectangle a region
+  // capture wants, so it comes along to Region rather than being drawn a
+  // second time. Window and Fullscreen pick an area of their own, so there it
+  // is dropped.
+  QRect scrolled;
+  if (scrollPanel_) {
+    scrolled = scrollPanel_->region();
     endScrollCapture();
+  }
   const bool fromEdit = phase_ == Phase::Edit;
   const QRect edited = selection_.toRect();
   if (fromEdit)
@@ -5194,6 +5201,10 @@ void CaptureEditor::activateSelectTab(SelectTab tab) {
   case SelectTab::Region:
     setScrollMode(false);
     setWindowMode(false);
+    if (!scrolled.isEmpty())
+      commitRegion(QRectF(scrolled),
+                   QStringLiteral("Area selected · Select moves layers · wheel "
+                                  "zooms · outer handles crop"));
     break;
   case SelectTab::Scroll:
     setScrollMode(true);

@@ -95,6 +95,10 @@ public:
   /// exclusive again) and hides. Safe to call from inside one of this
   /// panel's own signals; the destructor calls it too.
   void release();
+  /// The frame as it stands, in logical surface pixels. Empty until one has
+  /// been drawn. The editor reads it when another tab is picked, so the
+  /// rectangle carries across instead of having to be drawn again.
+  [[nodiscard]] QRect region() const { return region_; }
 
 signals:
   /// The capture is done: `image` is the stitched result.

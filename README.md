@@ -329,6 +329,10 @@ Tabs across the top of the overlay switch the capture kind: **Region**,
 **Window**, **Scrolling Region**, **Fullscreen**. All four are modes of the
 same overlay. Scrolling Region selects exactly like Region; once the region is
 drawn, the page inside it goes live and the scroll controls appear in place.
+Region and Scrolling Region frame the same rectangle, so switching between the
+two keeps it: the frame drawn for a scrolling capture is captured as a region,
+and a region just captured frames the scroll panel. Window and Fullscreen pick
+an area of their own, so switching to either starts over.
 The tabs stay up in the editor too: a tab there drops the edit and goes back to
 capturing in that mode, and a small **Scroll capture** button under the image
 turns the drawn region into a scrolling capture. The keys below do the same
