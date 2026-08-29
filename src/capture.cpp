@@ -4,6 +4,7 @@
 #include "startup-timing.hpp"
 
 #include <QBuffer>
+#include <QIODevice>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -423,6 +424,19 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation) {
   if (annotation.kind == Annotation::Kind::Redaction ||
       annotation.kind == Annotation::Kind::Spotlight)
     return;
+  if (annotation.kind == Annotation::Kind::Clip) {
+    if (annotation.image.isNull())
+      return;
+    const QRectF bounds =
+        QRectF(annotation.start, annotation.end).normalized();
+    if (bounds.width() < 1.0 || bounds.height() < 1.0)
+      return;
+    painter.save();
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    painter.drawImage(bounds, annotation.image);
+    painter.restore();
+    return;
+  }
 
   const qreal width = std::max<qreal>(2.0, annotation.size);
   QPen pen(annotation.color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
@@ -1548,6 +1562,8 @@ QString annotationToolName(Annotation::Kind kind) {
     return QStringLiteral("redaction");
   case Annotation::Kind::Spotlight:
     return QStringLiteral("spotlight");
+  case Annotation::Kind::Clip:
+    return QStringLiteral("clip");
   }
   return QStringLiteral("arrow");
 }
@@ -1573,6 +1589,8 @@ bool annotationKindFromName(const QString &name, Annotation::Kind &kind) {
     kind = Annotation::Kind::Redaction;
   else if (name == QStringLiteral("spotlight"))
     kind = Annotation::Kind::Spotlight;
+  else if (name == QStringLiteral("clip"))
+    kind = Annotation::Kind::Clip;
   else
     return false;
   return true;
@@ -1719,6 +1737,14 @@ QJsonObject annotationToJson(const Annotation &annotation) {
                             ? QStringLiteral("rounded")
                             : QStringLiteral("ellipse"));
   }
+  if (annotation.kind == Annotation::Kind::Clip && !annotation.image.isNull()) {
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    annotation.image.save(&buffer, "PNG");
+    object.insert(QStringLiteral("png"),
+                  QString::fromLatin1(bytes.toBase64()));
+  }
   return object;
 }
 
@@ -1768,6 +1794,12 @@ bool annotationFromJson(const QJsonObject &object, Annotation &annotation,
           : spotlightShape == QStringLiteral("rounded")
                 ? SpotlightShape::RoundedRectangle
                 : SpotlightShape::Ellipse;
+  if (annotation.kind == Annotation::Kind::Clip) {
+    const QByteArray png = QByteArray::fromBase64(
+        object.value(QStringLiteral("png")).toString().toLatin1());
+    if (!png.isEmpty())
+      annotation.image.loadFromData(png, "PNG");
+  }
   return true;
 }
 
@@ -1822,6 +1854,33 @@ QJsonObject operationToJson(const Operation &operation) {
     object.insert(QStringLiteral("logicalStart"), operation.cut.logicalStart);
     object.insert(QStringLiteral("logicalEnd"), operation.cut.logicalEnd);
     break;
+  case Operation::Type::Clip: {
+    object.insert(QStringLiteral("type"), QStringLiteral("clip"));
+    object.insert(QStringLiteral("sourceRect"),
+                  QJsonArray{operation.clip.sourceRect.x(),
+                             operation.clip.sourceRect.y(),
+                             operation.clip.sourceRect.width(),
+                             operation.clip.sourceRect.height()});
+    if (operation.clip.shape != ClipShape::Rect)
+      object.insert(QStringLiteral("shape"),
+                    clipShapeName(operation.clip.shape));
+    if (operation.clip.shape == ClipShape::Lasso &&
+        !operation.clip.points.isEmpty()) {
+      QJsonArray points;
+      for (const QPointF &point : operation.clip.points)
+        points.push_back(QJsonArray{point.x(), point.y()});
+      object.insert(QStringLiteral("points"), points);
+    }
+    if (operation.clip.shape == ClipShape::Rect && operation.clip.radius >= 1.0)
+      object.insert(QStringLiteral("radius"), operation.clip.radius);
+    if (clipFillOpaque(operation.clip.fill))
+      object.insert(QStringLiteral("fill"),
+                    operation.clip.fill.name(QColor::HexArgb));
+    if (!operation.annotations.isEmpty())
+      object.insert(QStringLiteral("annotation"),
+                    annotationToJson(operation.annotations.constFirst()));
+    break;
+  }
   }
   return object;
 }
@@ -1894,6 +1953,37 @@ bool operationFromJson(const QJsonObject &object, Operation &operation,
         object.value(QStringLiteral("logicalStart")).toInt();
     operation.cut.logicalEnd =
         object.value(QStringLiteral("logicalEnd")).toInt();
+    return true;
+  }
+  if (type == QStringLiteral("clip")) {
+    operation.type = Operation::Type::Clip;
+    const QRectF source = rectFromArray(object.value(QStringLiteral("sourceRect")));
+    operation.clip.sourceRect = source.toRect();
+    if (!clipShapeFromName(object.value(QStringLiteral("shape")).toString(),
+                           operation.clip.shape)) {
+      error = QStringLiteral("Operation log has an unknown clip shape");
+      return false;
+    }
+    for (const QJsonValue value :
+         object.value(QStringLiteral("points")).toArray()) {
+      const QJsonArray pair = value.toArray();
+      if (pair.size() >= 2)
+        operation.clip.points.push_back(
+            QPointF(pair.at(0).toDouble(), pair.at(1).toDouble()));
+    }
+    const QString fill = object.value(QStringLiteral("fill")).toString();
+    if (!fill.isEmpty())
+      operation.clip.fill = QColor(fill);
+    operation.clip.radius =
+        object.value(QStringLiteral("radius")).toDouble(0.0);
+    if (object.contains(QStringLiteral("annotation"))) {
+      Annotation annotation;
+      if (!annotationFromJson(
+              object.value(QStringLiteral("annotation")).toObject(), annotation,
+              error))
+        return false;
+      operation.annotations = {annotation};
+    }
     return true;
   }
   error = QStringLiteral("Operation log has an unknown operation type");

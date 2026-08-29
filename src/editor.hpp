@@ -9,6 +9,7 @@
 
 #include <QElapsedTimer>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QPlainTextEdit>
 #include <QPixmap>
 #include <QLineF>
@@ -151,6 +152,7 @@ public:
     Ocr,
     Eyedropper
   };
+  enum class PixelClipShape { Rect, Ellipse, Lasso };
 
 private:
   enum class Phase { Select, Export, Edit };
@@ -267,6 +269,32 @@ public:
   /// Apply a cut as if the user had dragged that band. Test hook: operate on
   /// a fixture raster without going through widget coordinates.
   void applyCutForTest(CutOp cut) { commitCut(std::move(cut)); }
+  /// Clip `logicalRect` (annotation space) out of the source and place the
+  /// tile at `dest`. Test hook: no widget drag.
+  void applyClipForTest(const QRectF &logicalRect, const QRectF &dest,
+                        const QColor &fill = {});
+  /// Overwrite the last Clip op's stored tile, then replay. Test hook for
+  /// "replay keeps a present tile instead of copyRect".
+  void markLastClipTileForTest(const QColor &color);
+  void replayLogForTest() { replayLog(); }
+  /// Pixel-marquee awaiting a lift. Test accessor.
+  [[nodiscard]] QRectF pixelClipRectForTest() const { return pixelClipRect_; }
+  [[nodiscard]] PixelClipShape pixelClipShapeForTest() const {
+    return pixelClipShape_;
+  }
+  [[nodiscard]] QVector<QPointF> pixelClipPointsForTest() const {
+    return pixelClipPoints_;
+  }
+  [[nodiscard]] bool pixelClipSnapEnabledForTest() const {
+    return pixelClipSnapEnabled_;
+  }
+  [[nodiscard]] ClipOp lockedClipOpForTest() const { return lockedClipOp(); }
+  [[nodiscard]] bool clipLiftActiveForTest() const { return clipLiftActive_; }
+  [[nodiscard]] QColor clipFillForTest() const { return clipFill_; }
+  [[nodiscard]] QRectF clipFillMenuRectForTest() const {
+    return clipFillMenuRect();
+  }
+  [[nodiscard]] QImage composedSourceForTest() const { return capture_.source; }
   /// Number of selected layers. Test accessor.
   [[nodiscard]] int selectedCountForTest() const {
     return static_cast<int>(selectedAnnotations_.size());
@@ -341,6 +369,9 @@ public:
   }
   [[nodiscard]] QRectF toolbarButtonRectForTest(const QString &action) const {
     for (const ToolbarButton &button : toolbarButtons())
+      if (button.action == action)
+        return button.rect;
+    for (const ToolbarButton &button : clipShapeStripButtons())
       if (button.action == action)
         return button.rect;
     return {};
@@ -538,7 +569,45 @@ private:
   void commitDelete(const QVector<int> &indices);
   void commitCrop(const QRectF &crop);
   void commitCut(CutOp cut);
+  void commitClip(ClipOp clip, Annotation annotation);
   void commitBackground(BackgroundStyle style, bool imageShadow);
+  void clearPixelClip();
+  void cyclePixelClipShape();
+  void setPixelClipShape(PixelClipShape shape);
+  void setPixelClipSnapEnabled(bool enabled);
+  [[nodiscard]] QString clipShapeStatus(bool hadLock) const;
+  [[nodiscard]] ClipOp lockedClipOp() const;
+  [[nodiscard]] QPainterPath logicalClipPath() const;
+  [[nodiscard]] QRectF pixelClipDragBounds() const;
+  struct LogicalSnap {
+    QRectF box;
+    qreal radius = 0;
+    QVector<QPointF> contour;
+  };
+  [[nodiscard]] std::optional<QRectF>
+  mapNativeSnap(const std::optional<QRect> &box) const;
+  [[nodiscard]] std::optional<LogicalSnap>
+  snapLogicalObjectAt(const QPointF &annotationPoint,
+                      const QRectF &logicalRoi = {},
+                      PixelClipShape shape = PixelClipShape::Rect) const;
+  void trySnapAt(const QPointF &annotationPoint, bool resetFill = true);
+  void beginClipLift(const QPointF &point);
+  void updateClipLift(const QPointF &point);
+  void finishClipLift();
+  void cancelClipLift();
+  void rebuildClipLiftPixmap();
+  void punchDisplayCaches(QRect nativeRect, const QColor &fill);
+  [[nodiscard]] QRect nativeRectForPixelClip(const QRectF &logical) const;
+  [[nodiscard]] bool pixelClipLargeEnough(const QRectF &logical) const;
+  [[nodiscard]] QVector<ToolbarButton> clipShapeStripButtons() const;
+  [[nodiscard]] Interaction pixelClipHandleAt(const QPointF &point) const;
+  [[nodiscard]] QRectF pixelClipWidgetRect() const;
+  [[nodiscard]] QRectF clipFillMenuRect() const;
+  [[nodiscard]] QColor clipSurroundingFill() const;
+  [[nodiscard]] QRect clipLiftRepaintRect() const;
+  void paintClipHolePreview(QPainter &painter,
+                            const QRectF &sourceImage) const;
+  void setClipFill(const QColor &fill);
   void commitCanvasBoundary(CanvasBoundaryMode mode);
   void cycleCanvasBoundary(bool reverse);
   void cycleBackground();
@@ -556,6 +625,10 @@ private:
   void runOcr(const QRectF &localSelection = {});
   void dismissOcrOverlay();
   void paintOcrOverlay(QPainter &painter, const QRectF &image, qreal scale);
+  void startSnapTrace(bool loop);
+  void stopSnapTrace();
+  [[nodiscard]] QPainterPath snapTracePath() const;
+  void paintSnapTrace(QPainter &painter, qreal scale) const;
   void setStatus(QString status);
   void toggleShapeFill();
   void toggleTextBackground();
@@ -651,6 +724,39 @@ private:
   // px); the source stays untouched while a shaded removal band previews the
   // drag, and the cut is applied only when the pointer is released.
   bool cutDragActive_ = false;
+  /// Select-tool pixel clip: empty-canvas marquee that hit no layers becomes
+  /// a locked path on the source. Dragging it lifts a clip layer.
+  PixelClipShape pixelClipShape_ = PixelClipShape::Rect;
+  bool pixelClipSnapEnabled_ = false;
+  bool pixelClipLockedEllipse_ = false;
+  std::optional<QRectF> pixelClipTraceSnap_;
+  qreal pixelClipTraceRadius_ = 0;
+  QVector<QPointF> pixelClipTracePoints_;
+  QRectF pixelClipRect_;
+  QRectF originalPixelClip_;
+  QVector<QPointF> pixelClipPoints_;
+  QVector<QPointF> originalPixelClipPoints_;
+  qreal pixelClipRadius_ = 0;
+  qreal originalPixelClipRadius_ = 0;
+  bool pixelClipResizing_ = false;
+  bool clipLiftActive_ = false;
+  QRectF clipLiftOrigin_;
+  QRectF clipLiftDest_;
+  QPointF clipLiftGrabOffset_;
+  QImage clipLiftTile_;
+  QPixmap clipLiftPixmap_;
+  qreal clipLiftPixmapScale_ = 0.0;
+  ClipOp clipLiftOp_;
+  bool clipLiftSnapped_ = false;
+  /// Hole infill for the next clip. Transparent (alpha 0) is the default.
+  QColor clipFill_ = QColor(0, 0, 0, 0);
+  QString clipHexEntry_;
+  /// Hash of Cut+Clip ops in `ops_[0, opIndex_)`. When it matches, replay
+  /// keeps `capture_.source` and the display caches instead of rebuilding.
+  quint64 composedPrefixHash_ = 0;
+  /// Per-clip-id hash of the Cut+Clip prefix *before* that op. A mismatch
+  /// means the tile must be recopied from the composed image.
+  QHash<quint64, quint64> clipTilePrefix_;
   QPointF cutDragStart_;
   CutOp liveCut_;
   qreal cutBandLo_ = 0.0;
@@ -803,6 +909,10 @@ private:
   QElapsedTimer ocrClock_;
   QTimer ocrAnimTimer_;
   QTimer ocrResultTimer_;
+  QTimer snapAnimTimer_;
+  QElapsedTimer snapAnimClock_;
+  bool snapTraceLoop_ = false;
+  bool snapTraceRevealing_ = false;
 };
 
 [[nodiscard]] QPointF constrainedCreationEndpoint(CaptureEditor::Tool tool,
