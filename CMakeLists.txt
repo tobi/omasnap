@@ -47,6 +47,8 @@ add_library(omasnap-core STATIC
   src/capture.hpp
   src/cut.cpp
   src/cut.hpp
+  src/clip.cpp
+  src/clip.hpp
   src/palette-config.cpp
   src/palette-config.hpp
   src/background-config.cpp
@@ -147,6 +149,10 @@ qt_add_executable(omasnap-smoke
   tests/cut-smoke.hpp
   tests/cut-mapping-smoke.cpp
   tests/cut-mapping-smoke.hpp
+  tests/clip-smoke.cpp
+  tests/clip-smoke.hpp
+  tests/clip-mapping-smoke.cpp
+  tests/clip-mapping-smoke.hpp
   tests/palette-config-smoke.cpp
   tests/palette-config-smoke.hpp
   src/cli-path.cpp

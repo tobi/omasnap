@@ -5,7 +5,7 @@
 The image on screen while editing is not the working state — the operation
 log (`ops_` in `CaptureEditor`, an ordered `QVector<Operation>` with an
 `opIndex_` cursor) is. Every action that changes the picture — a crop, a
-background choice, adding/patching/deleting an annotation, a cut — appends
+background choice, adding/patching/deleting an annotation, a cut, a clip — appends
 one `Operation`. Undo moves `opIndex_` back; redo moves it forward.
 `CaptureEditor::replayLog()` rebuilds the entire visible state (selection,
 background, annotation list, cuts) by replaying the log from empty up to
@@ -47,6 +47,22 @@ still fully undoable because of how they're kept in the log:
   original plus the list of cut ops every time the list changes
   (`CaptureEditor::refreshComposedCapture()`). Undo a cut and the composed
   image is rebuilt without it; `pristineSource_` was never modified.
+- **Clip** (`Operation::Type::Clip`) copies a **path** of native pixels
+  (rectangle, ellipse, or lasso polygon) and fills that hole — transparent by
+  default, or a solid colour from the selection fly-out — then adds those
+  pixels as a `Annotation::Kind::Clip` layer at the drop location. Pixels
+  outside the path on the lifted tile are alpha 0. The hole does **not**
+  collapse the image (that is Cut). The torn-off tile is kept on the Clip
+  annotation (and in JSON). Replay applies cuts and clip fills in order and
+  recopies from the composed image only when that tile is missing or the
+  cut/clip prefix before the op changed, so later cuts cannot rewrite an
+  already-torn piece. `refreshComposedCapture()` uses the same path fill.
+  Undo a clip and both the hole and the layer disappear together. Live drag is
+  editor-only preview; the log is touched only on release. Shape is stored as
+  `shape` (`rect` omitted, `ellipse`, `lasso` plus `points`); fill as HexArgb
+  when opaque. Click-to-snap / Snap-on drag fits the current clip shape
+  (rounded rect, ellipse, or silhouette) with a one-lap scan-dot, then the
+  mask locks. Rect stores optional `radius`.
 - **Redaction** exists to permanently destroy sensitive content, so it is
   the one place where "non-destructive until export" would be a bug, not a
   feature: `renderCapture` applies redactions to the cropped pixels

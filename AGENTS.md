@@ -82,6 +82,7 @@ change that touches the principle, not just this summary.
 | `src/stitch-replay.cpp` | Standalone tool: replay a dumped frame directory through the stitcher with no compositor |
 | `src/surface-capture.cpp` | In-process output/window capture via `ext-image-copy-capture` |
 | `src/cut.cpp/.hpp` | Cut-band tool: remove a strip and collapse the gap |
+| `src/clip.cpp/.hpp` | Clip-out: copy a path (rect/ellipse/lasso), punch a hole, lift as a layer |
 | `src/recent-snaps.cpp/.hpp` | The recents shelf: shelving/reopening working documents |
 | `src/output-config.cpp/.hpp`, `src/palette-config.cpp/.hpp` | The optional `omasnap.conf` INI: output destination/filename, color presets |
 | `src/pin.cpp/.hpp`, `src/pin-file.cpp/.hpp`, `src/pin-layout.cpp/.hpp` | Pinned-capture layer-shell surfaces (bottom-right, all workspaces) |

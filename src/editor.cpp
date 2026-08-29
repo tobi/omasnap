@@ -2,6 +2,7 @@
  */
 #include "editor.hpp"
 
+#include "clip.hpp"
 #include "stitch.hpp"
 #include "icons.hpp"
 #include "eyedropper.hpp"
@@ -27,7 +28,9 @@
 #include <QFontDatabase>
 #include <QFontMetrics>
 #include <QGuiApplication>
+#include <QHash>
 #include <QKeyEvent>
+#include <QLineF>
 #include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
@@ -39,10 +42,12 @@
 #include <QTextDocument>
 #include <QThread>
 #include <QTimer>
+#include <QTransform>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <utility>
 #include <numbers>
@@ -254,7 +259,8 @@ bool hasEndpointHandles(Annotation::Kind kind) {
          kind == Annotation::Kind::Rectangle ||
          kind == Annotation::Kind::Ellipse ||
          kind == Annotation::Kind::Redaction ||
-         kind == Annotation::Kind::Spotlight;
+         kind == Annotation::Kind::Spotlight ||
+         kind == Annotation::Kind::Clip;
 }
 
 /// Any handle drag on a layer (as opposed to a move, or a capture crop).
@@ -269,9 +275,70 @@ bool isBoxResize(CaptureEditor::Interaction interaction) {
          interaction <= CaptureEditor::Interaction::ResizeLeft;
 }
 
+void paintCheckerboard(QPainter &painter, const QRectF &bounds, qreal cell) {
+  painter.fillRect(bounds, QColor(245, 245, 247));
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(170, 172, 178));
+  const int columns = std::max(1, static_cast<int>(std::ceil(bounds.width() / cell)));
+  const int rows = std::max(1, static_cast<int>(std::ceil(bounds.height() / cell)));
+  for (int row = 0; row < rows; ++row) {
+    for (int column = 0; column < columns; ++column) {
+      if (((row + column) & 1) == 0)
+        continue;
+      painter.fillRect(QRectF(bounds.left() + column * cell,
+                              bounds.top() + row * cell, cell, cell),
+                       QColor(170, 172, 178));
+    }
+  }
+}
+
 /// How far from an edge a press still counts as grabbing it: wide enough to
 /// hit without aiming, since some layers are grabbable only by their border.
 constexpr qreal kEdgeGrabTolerance = 12.0;
+/// Empty-marquee arming: a 2 px fidget must not become a clip.
+constexpr qreal kMinPixelClipLogical = 12.0;
+constexpr qreal kMinPixelClipWidget = 12.0;
+
+quint64 mixPrefix(quint64 hash, quint64 value) {
+  return (hash ^ value) * 1099511628211ull;
+}
+
+quint64 composedMutationHash(const QVector<Operation> &ops, int end) {
+  quint64 hash = 14695981039346656037ull;
+  const int last = std::min(end, static_cast<int>(ops.size()));
+  for (int index = 0; index < last; ++index) {
+    const Operation &op = ops.at(index);
+    if (op.type == Operation::Type::Cut) {
+      hash = mixPrefix(hash, 1);
+      hash = mixPrefix(hash, static_cast<quint64>(op.cut.orientation));
+      hash = mixPrefix(hash, (static_cast<quint64>(op.cut.sourceStart) << 32) |
+                                 static_cast<quint32>(op.cut.sourceEnd));
+      hash = mixPrefix(hash, (static_cast<quint64>(op.cut.logicalStart) << 32) |
+                                 static_cast<quint32>(op.cut.logicalEnd));
+    } else if (op.type == Operation::Type::Clip) {
+      hash = mixPrefix(hash, 2);
+      const QRect rect = op.clip.sourceRect;
+      hash = mixPrefix(hash, (static_cast<quint64>(rect.x()) << 32) |
+                                 static_cast<quint32>(rect.y()));
+      hash = mixPrefix(hash, (static_cast<quint64>(rect.width()) << 32) |
+                                 static_cast<quint32>(rect.height()));
+      hash = mixPrefix(hash, op.clip.fill.isValid() ? op.clip.fill.rgba() : 0);
+    }
+  }
+  return hash;
+}
+
+bool clipOpsHaveTiles(const QVector<Operation> &ops, int end) {
+  const int last = std::min(end, static_cast<int>(ops.size()));
+  for (int index = 0; index < last; ++index) {
+    const Operation &op = ops.at(index);
+    if (op.type != Operation::Type::Clip)
+      continue;
+    if (op.annotations.isEmpty() || op.annotations.constFirst().image.isNull())
+      return false;
+  }
+  return true;
+}
 
 bool showsSelectionBounds(Annotation::Kind kind) {
   return kind != Annotation::Kind::Arrow && kind != Annotation::Kind::Line;
@@ -487,6 +554,27 @@ QPointF constrainedRedactionEndpoint(const QPointF &candidate,
 
 /// One top-to-bottom pass of the OCR scan band.
 constexpr qint64 kOcrSweepMs = 1200;
+/// One lap of the snap-recognition dot around a detected outline.
+constexpr qint64 kSnapTraceMs = 900;
+
+void appendPathPercentRange(QPainterPath &out, const QPainterPath &src,
+                            qreal from, qreal to) {
+  if (src.isEmpty())
+    return;
+  from = std::clamp(from, 0.0, 1.0);
+  to = std::clamp(to, 0.0, 1.0);
+  if (to < from)
+    std::swap(from, to);
+  const int samples = std::max(8, static_cast<int>(std::ceil((to - from) * 64)));
+  for (int i = 0; i <= samples; ++i) {
+    const qreal u = from + (to - from) * static_cast<qreal>(i) / samples;
+    const QPointF p = src.pointAtPercent(u);
+    if (i == 0)
+      out.moveTo(p);
+    else
+      out.lineTo(p);
+  }
+}
 
 void drawInstantTooltip(QPainter &painter, const QRect &bounds,
                         const QRectF &anchor, const QString &text) {
@@ -701,6 +789,14 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
 
   ocrAnimTimer_.setInterval(16);
   connect(&ocrAnimTimer_, &QTimer::timeout, this, [this] { update(); });
+  snapAnimTimer_.setInterval(16);
+  connect(&snapAnimTimer_, &QTimer::timeout, this, [this] {
+    if (!snapTraceLoop_ && snapAnimClock_.elapsed() >= kSnapTraceMs) {
+      snapAnimTimer_.stop();
+      snapTraceRevealing_ = false;
+    }
+    update();
+  });
   ocrResultTimer_.setSingleShot(true);
   ocrResultTimer_.setInterval(6000);
   connect(&ocrResultTimer_, &QTimer::timeout, this,
@@ -758,7 +854,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
       sourceWritten_ = true;
     // Let the cut finish before chaining another snapshot so persistence sees
     // its final committed operation rather than an intermediate interaction.
-    if (snapshotDirty_ && !cutDragActive_)
+    if (snapshotDirty_ && !cutDragActive_ && !clipLiftActive_)
       startSnapshotRender();
   });
 
@@ -1251,8 +1347,9 @@ QString CaptureEditor::toolStatus() const {
   const int size = qRound(annotationSize_);
   switch (tool_) {
   case Tool::Select:
-    return QStringLiteral("Select · drag moves layers · Ctrl+wheel zooms · "
-                          "outer handles crop");
+    return QStringLiteral(
+        "Select · drag to select layers · Ctrl+wheel zooms · outer handles "
+        "crop");
   case Tool::Spotlight: {
     const QString shape =
         spotlightShape_ == SpotlightShape::Ellipse ? QStringLiteral("ellipse")
@@ -1589,6 +1686,10 @@ void CaptureEditor::adjustSelectedAnnotation(int step) {
   case Annotation::Kind::Rectangle:
   case Annotation::Kind::Ellipse:
     break;
+  case Annotation::Kind::Clip:
+    setStatus(QStringLiteral(
+        "Clip layer · drag to move · handles resize · wheel ignored"));
+    return;
   }
   // A filled shape has no stroke showing, so weighing it would be a gesture
   // that does nothing visible: it grows instead, like the redaction above,
@@ -1726,12 +1827,16 @@ QRectF CaptureEditor::colorPaletteRect() const {
 }
 
 QRectF CaptureEditor::customColorPanelRect() const {
-  QRectF panel(colorPaletteRect().left(), colorPaletteRect().bottom() + 6, 220,
-               150);
+  const QRectF clipMenu = clipFillMenuRect();
+  const QRectF anchor = !clipMenu.isEmpty() ? clipMenu : colorPaletteRect();
+  QRectF panel(anchor.left(), anchor.bottom() + 6, 220, 150);
   if (panel.right() > width() - 8)
     panel.moveRight(width() - 8);
-  if (panel.bottom() > height() - 8)
-    panel.moveBottom(height() - 8);
+  if (panel.bottom() > height() - 8) {
+    panel.moveBottom(anchor.top() - 6);
+    if (panel.top() < 8)
+      panel.moveTop(8);
+  }
   return panel;
 }
 
@@ -1767,6 +1872,8 @@ void CaptureEditor::applyCustomColor(const QPointF &position) {
   }
   customColor_ = QColor::fromHsvF(customHue_, saturation, value);
   usingCustomColor_ = true;
+  if (!pixelClipRect_.isEmpty() && !clipLiftActive_)
+    setClipFill(customColor_);
   if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
       annotations_.at(selectedAnnotation_).kind !=
           Annotation::Kind::Redaction) {
@@ -2273,6 +2380,35 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
                        QStringLiteral("tool-eyedropper"), {},
                        QStringLiteral("Sample from image · I"), {}});
   }
+  if (includeSubmenus && !pixelClipRect_.isEmpty() && !clipLiftActive_) {
+    const QRectF menu = clipFillMenuRect();
+    if (!menu.isEmpty()) {
+      int slot = 0;
+      const auto slotRect = [&]() {
+        return QRectF(menu.left() + 4 + slot++ * 28, menu.top() + 4, 24, 28);
+      };
+      buttons.push_back({slotRect(), QStringLiteral("clip-fill-transparent"),
+                         {},
+                         QStringLiteral("Hole fill · transparent"), {}});
+      const QColor surroundings = clipSurroundingFill();
+      if (clipFillOpaque(surroundings))
+        buttons.push_back(
+            {slotRect(), QStringLiteral("clip-fill-surroundings"), {},
+             QStringLiteral("Hole fill · match surroundings"), surroundings});
+      const int presetCount = static_cast<int>(paletteConfig_.palette.size());
+      for (int index = 0; index < presetCount; ++index) {
+        buttons.push_back(
+            {slotRect(), QStringLiteral("clip-fill-%1").arg(index),
+             {},
+             QStringLiteral("Hole fill · %1").arg(index + 1),
+             paletteConfig_.palette.at(static_cast<std::size_t>(index))});
+      }
+      buttons.push_back({slotRect(), QStringLiteral("clip-fill-custom"), {},
+                         QStringLiteral("Hole fill · custom color"), {}});
+      buttons.push_back({slotRect(), QStringLiteral("tool-eyedropper"), {},
+                         QStringLiteral("Sample from image · I"), {}});
+    }
+  }
   return buttons;
 }
 
@@ -2364,6 +2500,8 @@ void CaptureEditor::applyEditState(const EditState &state) {
 }
 
 void CaptureEditor::cancelActiveDragForHistory() {
+  if (clipLiftActive_)
+    cancelClipLift();
   if (dragStartStateValid_)
     replayLog();
   dragging_ = false;
@@ -2437,6 +2575,9 @@ void CaptureEditor::commitPatch(const QVector<int> &indices) {
     Annotation annotation = annotations_.at(index);
     if (annotation.id == 0)
       annotation.id = nextAnnotationId_++;
+    // Clip pixels live on the Clip op; a patch only moves the dest rect.
+    if (annotation.kind == Annotation::Kind::Clip)
+      annotation.image = {};
     op.annotations.push_back(std::move(annotation));
   }
   if (op.annotations.isEmpty())
@@ -2469,6 +2610,669 @@ void CaptureEditor::commitCut(CutOp cut) {
   op.type = Operation::Type::Cut;
   op.cut = std::move(cut);
   commitOp(std::move(op));
+}
+
+void CaptureEditor::commitClip(ClipOp clip, Annotation annotation) {
+  if (annotation.id == 0)
+    annotation.id = nextAnnotationId_++;
+  annotation.kind = Annotation::Kind::Clip;
+  if (annotation.image.isNull())
+    annotation.image = copyRect(capture_.source, clip.sourceRect);
+  if (annotation.image.isNull())
+    return;
+
+  const quint64 prefixBefore = composedMutationHash(ops_, opIndex_);
+  if (opIndex_ < ops_.size())
+    ops_.resize(opIndex_);
+  Operation op;
+  op.type = Operation::Type::Clip;
+  op.clip = clip;
+  op.annotations = {annotation};
+  ops_.push_back(std::move(op));
+  constexpr qsizetype maximumOps = 100;
+  bool trimmed = false;
+  while (ops_.size() > maximumOps) {
+    if (ops_.constFirst().type == Operation::Type::Crop)
+      ops_.removeAt(1);
+    else
+      ops_.removeFirst();
+    if (opIndex_ > 0)
+      --opIndex_;
+    trimmed = true;
+  }
+  opIndex_ = ops_.size();
+  clipTilePrefix_.insert(annotation.id, prefixBefore);
+  if (trimmed) {
+    replayLog();
+    scheduleSnapshot();
+    return;
+  }
+
+  fillHole(capture_.source, clip);
+  if (clip.shape == ClipShape::Rect)
+    punchDisplayCaches(clip.sourceRect, clip.fill);
+  else
+    redactionBaseStale_ = true;
+  annotations_.push_back(std::move(annotation));
+  composedPrefixHash_ = composedMutationHash(ops_, opIndex_);
+  refreshCanvasRect();
+  scheduleSnapshot();
+  update();
+}
+
+void CaptureEditor::applyClipForTest(const QRectF &logicalRect,
+                                     const QRectF &dest, const QColor &fill) {
+  const QRect native = nativeRectForPixelClip(logicalRect);
+  if (native.isEmpty())
+    return;
+  Annotation annotation;
+  annotation.kind = Annotation::Kind::Clip;
+  annotation.start = dest.topLeft();
+  annotation.end = dest.bottomRight();
+  commitClip(ClipOp{ClipShape::Rect, native, {}, fill}, std::move(annotation));
+}
+
+void CaptureEditor::markLastClipTileForTest(const QColor &color) {
+  for (int index = ops_.size() - 1; index >= 0; --index) {
+    Operation &op = ops_[index];
+    if (op.type != Operation::Type::Clip || op.annotations.isEmpty())
+      continue;
+    if (op.annotations.front().image.isNull())
+      return;
+    op.annotations.front().image.fill(color);
+    return;
+  }
+}
+
+void CaptureEditor::clearPixelClip() {
+  pixelClipRect_ = {};
+  originalPixelClip_ = {};
+  pixelClipPoints_.clear();
+  originalPixelClipPoints_.clear();
+  pixelClipLockedEllipse_ = false;
+  pixelClipRadius_ = 0;
+  originalPixelClipRadius_ = 0;
+  pixelClipTraceSnap_.reset();
+  pixelClipTraceRadius_ = 0;
+  pixelClipTracePoints_.clear();
+  pixelClipResizing_ = false;
+  clipHexEntry_.clear();
+  clipFill_ = QColor(0, 0, 0, 0);
+  stopSnapTrace();
+  cancelClipLift();
+}
+
+void CaptureEditor::cyclePixelClipShape() {
+  switch (pixelClipShape_) {
+  case PixelClipShape::Rect:
+    setPixelClipShape(PixelClipShape::Ellipse);
+    break;
+  case PixelClipShape::Ellipse:
+    setPixelClipShape(PixelClipShape::Lasso);
+    break;
+  case PixelClipShape::Lasso:
+    setPixelClipShape(PixelClipShape::Rect);
+    break;
+  }
+}
+
+QString CaptureEditor::clipShapeStatus(bool hadLock) const {
+  const QString snap =
+      pixelClipSnapEnabled_ ? QStringLiteral(" · snap on") : QString();
+  switch (pixelClipShape_) {
+  case PixelClipShape::Rect:
+    return hadLock ? QStringLiteral(
+                         "Clip · rectangle%1 · drag inside to lift · V cycles")
+                         .arg(snap)
+                   : QStringLiteral("Clip · rectangle%1 · drag a box on empty "
+                                    "canvas · V cycles")
+                         .arg(snap);
+  case PixelClipShape::Ellipse:
+    return hadLock ? QStringLiteral(
+                         "Clip · ellipse%1 · drag inside to lift · V cycles")
+                         .arg(snap)
+                   : QStringLiteral("Clip · ellipse%1 · drag a box on empty "
+                                    "canvas · V cycles")
+                         .arg(snap);
+  case PixelClipShape::Lasso:
+    return hadLock
+               ? QStringLiteral(
+                     "Clip · lasso%1 · drag inside to lift · V cycles")
+                     .arg(snap)
+               : QStringLiteral("Clip · lasso%1 · trace a shape · V cycles")
+                     .arg(snap);
+  }
+  return {};
+}
+
+void CaptureEditor::setPixelClipShape(PixelClipShape shape) {
+  const bool hadLock = !pixelClipRect_.isEmpty();
+  const bool wasLasso = !pixelClipPoints_.isEmpty();
+  const bool wasEllipse = !wasLasso && pixelClipLockedEllipse_;
+  pixelClipShape_ = shape;
+  if (hadLock) {
+    if (shape == PixelClipShape::Lasso && pixelClipPoints_.isEmpty()) {
+      const QRectF box = pixelClipRect_.normalized();
+      if (wasEllipse) {
+        const QPointF c = box.center();
+        const qreal rx = box.width() / 2.0;
+        const qreal ry = box.height() / 2.0;
+        pixelClipPoints_.clear();
+        for (int i = 0; i < 24; ++i) {
+          const qreal a =
+              static_cast<qreal>(i) * (2.0 * std::numbers::pi / 24.0);
+          pixelClipPoints_.push_back(
+              QPointF(c.x() + rx * std::cos(a), c.y() + ry * std::sin(a)));
+        }
+      } else {
+        pixelClipPoints_ = {box.topLeft(), box.topRight(), box.bottomRight(),
+                            box.bottomLeft()};
+      }
+    }
+    if (shape != PixelClipShape::Lasso)
+      pixelClipPoints_.clear();
+  } else if (shape != PixelClipShape::Lasso) {
+    pixelClipPoints_.clear();
+  }
+  pixelClipLockedEllipse_ =
+      hadLock && pixelClipPoints_.isEmpty() && shape == PixelClipShape::Ellipse;
+  if (shape != PixelClipShape::Rect)
+    pixelClipRadius_ = 0;
+  setStatus(clipShapeStatus(hadLock));
+  update();
+}
+
+void CaptureEditor::setPixelClipSnapEnabled(bool enabled) {
+  pixelClipSnapEnabled_ = enabled;
+  if (enabled && !pixelClipRect_.isEmpty()) {
+    trySnapAt(pixelClipRect_.normalized().center(), false);
+  } else if (enabled) {
+    setStatus(QStringLiteral(
+        "Clip · snap on · click an object or drag Rect/Ellipse/Lasso"));
+  } else {
+    setStatus(clipShapeStatus(!pixelClipRect_.isEmpty()));
+  }
+  update();
+}
+
+ClipOp CaptureEditor::lockedClipOp() const {
+  ClipShape shape = ClipShape::Rect;
+  if (!pixelClipPoints_.isEmpty())
+    shape = ClipShape::Lasso;
+  else if (pixelClipLockedEllipse_)
+    shape = ClipShape::Ellipse;
+  QVector<QPointF> points;
+  points.reserve(pixelClipPoints_.size());
+  for (const QPointF &point : pixelClipPoints_)
+    points.push_back(point + selection_.topLeft());
+  return nativeClipOp(shape, pixelClipRect_.normalized().translated(
+                                 selection_.topLeft()),
+                      points, capture_.previewSize, capture_.source.size(),
+                      clipFill_, pixelClipRadius_);
+}
+
+QRectF CaptureEditor::pixelClipDragBounds() const {
+  if (pixelClipShape_ == PixelClipShape::Lasso &&
+      pixelClipPoints_.size() >= 2) {
+    qreal minX = pixelClipPoints_.constFirst().x();
+    qreal maxX = minX;
+    qreal minY = pixelClipPoints_.constFirst().y();
+    qreal maxY = minY;
+    for (const QPointF &point : pixelClipPoints_) {
+      minX = std::min(minX, point.x());
+      maxX = std::max(maxX, point.x());
+      minY = std::min(minY, point.y());
+      maxY = std::max(maxY, point.y());
+    }
+    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).normalized();
+  }
+  return marqueeRect_.normalized();
+}
+
+QPainterPath CaptureEditor::logicalClipPath() const {
+  QPainterPath path;
+  const QRectF box = pixelClipRect_.normalized();
+  if (box.isEmpty() && pixelClipPoints_.size() < 3)
+    return path;
+  if (!pixelClipPoints_.isEmpty()) {
+    path.moveTo(pixelClipPoints_.constFirst());
+    for (int i = 1; i < pixelClipPoints_.size(); ++i)
+      path.lineTo(pixelClipPoints_.at(i));
+    path.closeSubpath();
+    return path;
+  }
+  if (pixelClipLockedEllipse_)
+    path.addEllipse(box);
+  else if (pixelClipRadius_ >= 1.0) {
+    const qreal r = std::min({pixelClipRadius_, box.width() / 2.0,
+                              box.height() / 2.0});
+    path.addRoundedRect(box, r, r);
+  } else {
+    path.addRect(box);
+  }
+  return path;
+}
+
+std::optional<QRectF>
+CaptureEditor::mapNativeSnap(const std::optional<QRect> &box) const {
+  if (!box)
+    return std::nullopt;
+  const qreal scaleX = capture_.previewSize.width() /
+                       static_cast<qreal>(std::max(1, capture_.source.width()));
+  const qreal scaleY =
+      capture_.previewSize.height() /
+      static_cast<qreal>(std::max(1, capture_.source.height()));
+  QRectF logicalBox(box->x() * scaleX, box->y() * scaleY, box->width() * scaleX,
+                    box->height() * scaleY);
+  logicalBox.translate(-selection_.topLeft());
+  const QRectF bounds(QPointF(), selection_.size());
+  logicalBox = logicalBox.intersected(bounds);
+  if (logicalBox.width() < 2.0 || logicalBox.height() < 2.0)
+    return std::nullopt;
+  return logicalBox;
+}
+
+std::optional<CaptureEditor::LogicalSnap>
+CaptureEditor::snapLogicalObjectAt(const QPointF &annotationPoint,
+                                   const QRectF &logicalRoi,
+                                   PixelClipShape shape) const {
+  const QRect native =
+      nativeRectForPixelClip(QRectF(annotationPoint, QSizeF(1, 1)));
+  if (native.isEmpty())
+    return std::nullopt;
+  QRect roi;
+  if (logicalRoi.isValid() && !logicalRoi.isEmpty())
+    roi = nativeRectForPixelClip(logicalRoi);
+  if (shape == PixelClipShape::Ellipse) {
+    const std::optional<QRect> circle =
+        snapEllipseRect(capture_.source, native.center(), roi);
+    const std::optional<QRectF> box = mapNativeSnap(circle);
+    if (!box)
+      return std::nullopt;
+    LogicalSnap snap;
+    snap.box = *box;
+    return snap;
+  }
+  const std::optional<ClipSnapHit> hit =
+      snapObject(capture_.source, native.center(), roi);
+  if (!hit)
+    return std::nullopt;
+  const std::optional<QRectF> box = mapNativeSnap(hit->box);
+  if (!box)
+    return std::nullopt;
+  const qreal scaleX = capture_.previewSize.width() /
+                       static_cast<qreal>(std::max(1, capture_.source.width()));
+  const qreal scaleY =
+      capture_.previewSize.height() /
+      static_cast<qreal>(std::max(1, capture_.source.height()));
+  LogicalSnap snap;
+  snap.box = *box;
+  snap.radius = hit->radius * (scaleX + scaleY) / 2.0;
+  snap.contour.reserve(hit->contour.size());
+  for (const QPointF &point : hit->contour) {
+    snap.contour.push_back(QPointF(point.x() * scaleX, point.y() * scaleY) -
+                           selection_.topLeft());
+  }
+  return snap;
+}
+
+void CaptureEditor::trySnapAt(const QPointF &annotationPoint, bool resetFill) {
+  const std::optional<LogicalSnap> snap =
+      snapLogicalObjectAt(annotationPoint, {}, pixelClipShape_);
+  if (!snap) {
+    setStatus(QStringLiteral("Nothing to snap · drag a shape instead"));
+    return;
+  }
+  pixelClipRect_ = snap->box;
+  pixelClipTraceSnap_.reset();
+  pixelClipTraceRadius_ = 0;
+  pixelClipTracePoints_.clear();
+  if (pixelClipShape_ == PixelClipShape::Lasso && snap->contour.size() >= 8) {
+    pixelClipPoints_ = snap->contour;
+    pixelClipLockedEllipse_ = false;
+    pixelClipRadius_ = 0;
+  } else if (pixelClipShape_ == PixelClipShape::Ellipse) {
+    pixelClipPoints_.clear();
+    pixelClipLockedEllipse_ = true;
+    pixelClipRadius_ = 0;
+  } else {
+    pixelClipPoints_.clear();
+    pixelClipLockedEllipse_ = false;
+    pixelClipRadius_ = snap->radius;
+  }
+  if (resetFill)
+    applyDefaultClipFill();
+  selectedAnnotations_.clear();
+  selectedAnnotation_ = -1;
+  const QString kind = pixelClipShape_ == PixelClipShape::Lasso
+                           ? QStringLiteral("outline")
+                       : pixelClipShape_ == PixelClipShape::Ellipse
+                           ? QStringLiteral("ellipse")
+                           : QStringLiteral("rectangle");
+  setStatus(QStringLiteral(
+                "Snapped to %1 · pick a hole fill or drag inside to clip out "
+                "· Esc cancels")
+                .arg(kind));
+  startSnapTrace(false);
+}
+
+QVector<CaptureEditor::ToolbarButton>
+CaptureEditor::clipShapeStripButtons() const {
+  if (tool_ != Tool::Select || phase_ != Phase::Edit)
+    return {};
+  const qreal scale = toolbarScale(width());
+  const qreal height = 28 * scale;
+  const qreal chip = 64 * scale;
+  const qreal gap = 4 * scale;
+  const qreal total = 4 * chip + 3 * gap + 8 * scale;
+  qreal x = (width() - total) / 2.0 + 4 * scale;
+  const qreal y = toolbarTop() + 36.0 * scale + 6 * scale;
+  QVector<ToolbarButton> buttons;
+  const auto add = [&](const QString &action, const QString &label,
+                       const QString &tip) {
+    buttons.push_back({QRectF(x, y, chip, height), action, label, tip, {}});
+    x += chip + gap;
+  };
+  add(QStringLiteral("clip-shape-rect"), QStringLiteral("Rect"),
+      QStringLiteral("Clip rectangle · V cycles"));
+  add(QStringLiteral("clip-shape-ellipse"), QStringLiteral("Ellipse"),
+      QStringLiteral("Clip ellipse · V cycles"));
+  add(QStringLiteral("clip-shape-lasso"), QStringLiteral("Lasso"),
+      QStringLiteral("Clip lasso · V cycles"));
+  add(QStringLiteral("clip-shape-snap"), QStringLiteral("Snap"),
+      pixelClipSnapEnabled_
+          ? QStringLiteral(
+                "Snap on · click an object or drag around it")
+          : QStringLiteral(
+                "Snap off · click to turn on, then click an object or drag "
+                "around it"));
+  return buttons;
+}
+
+void CaptureEditor::cancelClipLift() {
+  clipLiftActive_ = false;
+  clipLiftOrigin_ = {};
+  clipLiftDest_ = {};
+  clipLiftGrabOffset_ = {};
+  clipLiftTile_ = {};
+  clipLiftPixmap_ = {};
+  clipLiftPixmapScale_ = 0.0;
+  clipLiftSnapped_ = false;
+}
+
+void CaptureEditor::rebuildClipLiftPixmap() {
+  if (clipLiftTile_.isNull() || clipLiftOrigin_.isEmpty()) {
+    clipLiftPixmap_ = {};
+    clipLiftPixmapScale_ = 0.0;
+    return;
+  }
+  const qreal dpr = std::max<qreal>(devicePixelRatioF(), 0.01);
+  const qreal pixelScale = std::max<qreal>(editScale() * dpr, 0.01);
+  const QSize size(std::max(1, qRound(clipLiftOrigin_.width() * pixelScale)),
+                   std::max(1, qRound(clipLiftOrigin_.height() * pixelScale)));
+  QImage scaled = clipLiftTile_.scaled(size, Qt::IgnoreAspectRatio,
+                                       Qt::FastTransformation);
+  clipLiftPixmap_ = QPixmap::fromImage(std::move(scaled));
+  clipLiftPixmap_.setDevicePixelRatio(dpr);
+  clipLiftPixmapScale_ = editScale();
+}
+
+void CaptureEditor::punchDisplayCaches(QRect nativeRect, const QColor &fill) {
+  if (redactionBaseStale_ || redactionBase_.isNull() || selection_.isEmpty() ||
+      capture_.previewSize.isEmpty() || capture_.source.isNull())
+    return;
+  const QSize sourceSize = capture_.source.size();
+  if (sourceSize.isEmpty())
+    return;
+  const qreal toLogicalX =
+      capture_.previewSize.width() / static_cast<qreal>(sourceSize.width());
+  const qreal toLogicalY =
+      capture_.previewSize.height() / static_cast<qreal>(sourceSize.height());
+  const QRectF logical(nativeRect.x() * toLogicalX - selection_.left(),
+                       nativeRect.y() * toLogicalY - selection_.top(),
+                       nativeRect.width() * toLogicalX,
+                       nativeRect.height() * toLogicalY);
+  const qreal toCacheX = redactionBase_.width() / selection_.width();
+  const qreal toCacheY = redactionBase_.height() / selection_.height();
+  const QRect cacheRect(
+      QPoint(static_cast<int>(std::floor(logical.left() * toCacheX)),
+             static_cast<int>(std::floor(logical.top() * toCacheY))),
+      QPoint(static_cast<int>(std::ceil(logical.right() * toCacheX) - 1),
+             static_cast<int>(std::ceil(logical.bottom() * toCacheY) - 1)));
+  fillHole(redactionBase_, cacheRect, fill);
+  if (!redactionLayerCache_.isNull() &&
+      redactionLayerCache_.size() == redactionBase_.size())
+    fillHole(redactionLayerCache_, cacheRect, fill);
+}
+
+bool CaptureEditor::pixelClipLargeEnough(const QRectF &logical) const {
+  const QRectF box = logical.normalized();
+  if (box.width() < kMinPixelClipLogical || box.height() < kMinPixelClipLogical)
+    return false;
+  const qreal scale = std::max<qreal>(editScale(), 0.01);
+  if (box.width() * scale < kMinPixelClipWidget ||
+      box.height() * scale < kMinPixelClipWidget)
+    return false;
+  return !nativeRectForPixelClip(box).isEmpty();
+}
+
+QRect CaptureEditor::clipLiftRepaintRect() const {
+  if (!clipLiftActive_)
+    return {};
+  const qreal scale = std::max<qreal>(editScale(), 0.01);
+  const QPointF origin = sourceFrameWidgetRect().topLeft();
+  const auto toWidget = [&](const QRectF &logical) {
+    return QRectF(origin + logical.topLeft() * scale, logical.size() * scale);
+  };
+  QRectF area = toWidget(clipLiftDest_).united(toWidget(clipLiftOrigin_));
+  return area.adjusted(-10, -10, 18, 18).toAlignedRect();
+}
+
+void CaptureEditor::paintClipHolePreview(QPainter &painter,
+                                         const QRectF &sourceImage) const {
+  const QPainterPath logical = logicalClipPath();
+  if (logical.isEmpty())
+    return;
+  const qreal scale = std::max<qreal>(editScale(), 0.01);
+  QTransform toWidget;
+  toWidget.translate(sourceImage.left(), sourceImage.top());
+  toWidget.scale(scale, scale);
+  const QPainterPath widget = toWidget.map(logical);
+  const QRectF hole = widget.boundingRect();
+  if (hole.isEmpty())
+    return;
+  painter.save();
+  painter.setClipPath(widget, Qt::IntersectClip);
+  painter.setCompositionMode(QPainter::CompositionMode_Source);
+  if (clipFillOpaque(clipFill_))
+    painter.fillRect(hole, clipFill_);
+  else
+    paintCheckerboard(painter, hole, 8.0);
+  painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+  painter.restore();
+}
+
+QRect CaptureEditor::nativeRectForPixelClip(const QRectF &logical) const {
+  const QRectF absolute = logical.normalized().translated(selection_.topLeft());
+  return nativeClipRect(absolute, capture_.previewSize, capture_.source.size());
+}
+
+CaptureEditor::Interaction
+CaptureEditor::pixelClipHandleAt(const QPointF &point) const {
+  if (pixelClipRect_.isEmpty() || snapTraceRevealing_)
+    return Interaction::None;
+  Annotation box;
+  box.kind = Annotation::Kind::Rectangle;
+  box.start = pixelClipRect_.topLeft();
+  box.end = pixelClipRect_.bottomRight();
+  const qreal scale = std::max<qreal>(editScale(), 0.01);
+  const QRectF bounds = pixelClipRect_.normalized();
+  const qreal radius =
+      std::min({6.0 / scale, bounds.width() / 4.0, bounds.height() / 4.0});
+  for (const auto &[position, handle] : annotationHandles(box)) {
+    if (QLineF(point, position).length() <= radius)
+      return handle;
+  }
+  return Interaction::None;
+}
+
+QRectF CaptureEditor::pixelClipWidgetRect() const {
+  if (pixelClipRect_.isEmpty())
+    return {};
+  const qreal scale = std::max<qreal>(editScale(), 0.01);
+  return QRectF(sourceFrameWidgetRect().topLeft() +
+                    pixelClipRect_.topLeft() * scale,
+                pixelClipRect_.size() * scale);
+}
+
+QColor CaptureEditor::clipSurroundingFill() const {
+  if (pixelClipRect_.isEmpty())
+    return {};
+  return sampleClipSurroundings(
+      capture_.source, nativeRectForPixelClip(pixelClipRect_.normalized()));
+}
+
+QRectF CaptureEditor::clipFillMenuRect() const {
+  if (pixelClipRect_.isEmpty() || clipLiftActive_ || snapTraceRevealing_)
+    return {};
+  int swatches =
+      static_cast<int>(paletteConfig_.palette.size()) + 3; // T + custom + I
+  if (clipFillOpaque(clipSurroundingFill()))
+    ++swatches;
+  const qreal menuWidth = 8.0 + swatches * 28.0;
+  const QRectF clip = pixelClipWidgetRect();
+  QRectF menu(clip.right() + 8.0, clip.top(), menuWidth, 36.0);
+  if (menu.right() > width() - 8.0)
+    menu.moveRight(clip.left() - 8.0);
+  if (menu.intersects(clip)) {
+    menu.moveCenter(QPointF(clip.center().x(), clip.top() - 26.0));
+    if (menu.top() < 8.0)
+      menu.moveTop(clip.bottom() + 8.0);
+  }
+  if (menu.left() < 8.0)
+    menu.moveLeft(8.0);
+  if (menu.right() > width() - 8.0)
+    menu.moveRight(width() - 8.0);
+  if (menu.top() < 8.0)
+    menu.moveTop(8.0);
+  if (menu.bottom() > height() - 8.0)
+    menu.moveBottom(height() - 8.0);
+  return menu;
+}
+
+void CaptureEditor::setClipFill(const QColor &fill) {
+  clipFill_ = fill.isValid() ? fill : QColor(0, 0, 0, 0);
+  if (clipFillOpaque(clipFill_))
+    setStatus(QStringLiteral("Hole fill %1 · drag inside to clip out")
+                  .arg(clipFill_.name(QColor::HexRgb).toUpper()));
+  else
+    setStatus(QStringLiteral(
+        "Hole fill transparent · drag inside to clip out · Esc cancels"));
+  update();
+}
+
+void CaptureEditor::applyDefaultClipFill() {
+  const QColor around = clipSurroundingFill();
+  clipFill_ = clipFillOpaque(around) ? around : QColor(0, 0, 0, 0);
+}
+
+void CaptureEditor::armClipFillEyedropper() {
+  if (tool_ != Tool::Eyedropper)
+    toolBeforeEyedropper_ = tool_;
+  tool_ = Tool::Eyedropper;
+  setStatus(QStringLiteral(
+      "Sample hole fill from the image · click a pixel · T cycles"));
+}
+
+void CaptureEditor::cycleClipHoleFill() {
+  if (tool_ == Tool::Eyedropper) {
+    tool_ = Tool::Select;
+    setClipFill(QColor(0, 0, 0, 0));
+    return;
+  }
+  const QColor around = clipSurroundingFill();
+  if (!clipFillOpaque(clipFill_)) {
+    if (clipFillOpaque(around))
+      setClipFill(around);
+    else
+      armClipFillEyedropper();
+    return;
+  }
+  if (clipFillOpaque(around) && clipFill_.rgb() == around.rgb()) {
+    armClipFillEyedropper();
+    return;
+  }
+  setClipFill(QColor(0, 0, 0, 0));
+}
+
+void CaptureEditor::beginClipLift(const QPointF &point) {
+  clipLiftOp_ = lockedClipOp();
+  const QImage tile = copyMasked(capture_.source, clipLiftOp_);
+  if (tile.isNull())
+    return;
+  stopSnapTrace();
+  clipLiftActive_ = true;
+  clipLiftOrigin_ = pixelClipRect_.normalized();
+  clipLiftDest_ = clipLiftOrigin_;
+  clipLiftGrabOffset_ = point - clipLiftOrigin_.center();
+  clipLiftTile_ = tile;
+  clipLiftSnapped_ = true;
+  rebuildClipLiftPixmap();
+  dragging_ = true;
+  interaction_ = Interaction::None;
+  setCursor(Qt::ClosedHandCursor);
+  setStatus(QStringLiteral(
+      "Dragging selection — release near the hole to snap it back"));
+}
+
+void CaptureEditor::updateClipLift(const QPointF &point) {
+  if (!clipLiftActive_)
+    return;
+  QRectF dest = clipLiftOrigin_;
+  dest.moveCenter(point - clipLiftGrabOffset_);
+  const qreal enter = clipSnapEnterThreshold(editScale());
+  const qreal leave = clipSnapLeaveThreshold(editScale());
+  if (clipLiftSnapped_)
+    clipLiftSnapped_ = clipDestSnapped(dest, clipLiftOrigin_, leave);
+  else
+    clipLiftSnapped_ = clipDestSnapped(dest, clipLiftOrigin_, enter);
+  clipLiftDest_ = dest;
+}
+
+void CaptureEditor::finishClipLift() {
+  if (!clipLiftActive_)
+    return;
+  if (clipLiftSnapped_) {
+    cancelClipLift();
+    dragging_ = false;
+    setStatus(QStringLiteral("Selection snapped back into place"));
+    updatePointerCursor();
+    update();
+    return;
+  }
+  ClipOp clip = clipLiftOp_;
+  clip.fill = clipFill_;
+  Annotation annotation;
+  annotation.kind = Annotation::Kind::Clip;
+  annotation.start = clipLiftDest_.topLeft();
+  annotation.end = clipLiftDest_.bottomRight();
+  annotation.image = clipLiftTile_;
+  cancelClipLift();
+  pixelClipRect_ = {};
+  pixelClipPoints_.clear();
+  pixelClipLockedEllipse_ = false;
+  pixelClipRadius_ = 0;
+  dragging_ = false;
+  commitClip(std::move(clip), std::move(annotation));
+  selectedAnnotation_ = annotations_.isEmpty()
+                            ? -1
+                            : static_cast<int>(annotations_.size()) - 1;
+  selectedAnnotations_.clear();
+  if (selectedAnnotation_ >= 0)
+    selectedAnnotations_ = {selectedAnnotation_};
+  setStatus(QStringLiteral(
+      "Clipped to a new layer · drag another region to clip again · Ctrl+Z "
+      "undoes"));
 }
 
 void CaptureEditor::commitBackground(BackgroundStyle style, bool imageShadow) {
@@ -2613,6 +3417,11 @@ void CaptureEditor::replayLog() {
   CanvasBoundaryMode canvasBoundary = CanvasBoundaryMode::Framed;
   QVector<Annotation> annotations;
   QVector<CutOp> cuts;
+  const quint64 prefixHash = composedMutationHash(ops_, opIndex_);
+  const bool reuseComposed = prefixHash == composedPrefixHash_ &&
+                             !capture_.source.isNull() &&
+                             clipOpsHaveTiles(ops_, opIndex_);
+  QImage composed = reuseComposed ? capture_.source : pristineSource_;
   int nextMarker = 1;
   for (int index = 0; index < opIndex_ && index < ops_.size(); ++index) {
     const Operation &op = ops_.at(index);
@@ -2651,6 +3460,8 @@ void CaptureEditor::replayLog() {
             });
         if (match != annotations.end()) {
           Annotation updated = annotation;
+          if (updated.kind == Annotation::Kind::Clip && updated.image.isNull())
+            updated.image = match->image;
           annotations.erase(match);
           annotations.push_back(std::move(updated));
         }
@@ -2687,6 +3498,27 @@ void CaptureEditor::replayLog() {
           selection.setWidth(std::max<qreal>(1.0, selection.width() - band));
       }
       cuts.push_back(op.cut);
+      if (!reuseComposed && !composed.isNull())
+        composed = removeBand(composed, op.cut.orientation, op.cut.sourceStart,
+                              op.cut.sourceEnd);
+      break;
+    }
+    case Operation::Type::Clip: {
+      Annotation layer;
+      if (!op.annotations.isEmpty())
+        layer = op.annotations.constFirst();
+      layer.kind = Annotation::Kind::Clip;
+      if (!reuseComposed) {
+        const quint64 prefixBefore = composedMutationHash(ops_, index);
+        const bool prefixChanged =
+            layer.id != 0 && clipTilePrefix_.value(layer.id) != prefixBefore;
+        layer.image = resolveClipTile(composed, op.clip, layer.image,
+                                      prefixChanged);
+        if (layer.id != 0)
+          clipTilePrefix_.insert(layer.id, prefixBefore);
+        fillHole(composed, op.clip);
+      }
+      annotations.push_back(std::move(layer));
       break;
     }
     }
@@ -2696,9 +3528,16 @@ void CaptureEditor::replayLog() {
   backgroundStyle_ = background;
   imageShadow_ = imageShadow;
   canvasBoundaryMode_ = canvasBoundary;
-  if (cuts != cuts_) {
-    cuts_ = std::move(cuts);
-    refreshComposedCapture();
+  cuts_ = std::move(cuts);
+  capture_.source = std::move(composed);
+  capture_.previewSize =
+      composedLogicalSize(pristineLogicalSize_.isEmpty() ? capture_.previewSize
+                                                         : pristineLogicalSize_,
+                          cuts_);
+  composedPrefixHash_ = prefixHash;
+  if (!reuseComposed) {
+    backdropKey_ = 0;
+    redactionBaseStale_ = true;
   }
   if (!selection.isEmpty())
     selection_ = selection;
@@ -2720,7 +3559,6 @@ void CaptureEditor::replayLog() {
   if (selectedAnnotation_ < 0 && !selectedAnnotations_.isEmpty())
     selectedAnnotation_ = selectedAnnotations_.constLast();
   editingAnnotation_ = -1;
-  redactionBaseStale_ = true;
   updatePointerCursor();
   update();
 }
@@ -2749,6 +3587,17 @@ int CaptureEditor::raiseAnnotation(int index) {
 }
 
 void CaptureEditor::undoEdit() {
+  if (clipLiftActive_) {
+    // A lift is an uncommitted drag. Ctrl+Z / the undo button must drop it
+    // without popping the last committed op (QTest also synthesizes a bare
+    // Control press before Z, which used to cancel first and then undo).
+    cancelClipLift();
+    dragging_ = false;
+    setStatus(QStringLiteral("Clip cancelled"));
+    updatePointerCursor();
+    update();
+    return;
+  }
   endNudgeRun();
   cancelActiveDragForHistory();
   if (opIndex_ <= 0) {
@@ -2947,6 +3796,28 @@ void CaptureEditor::enterExport() {
 }
 
 void CaptureEditor::handleEscape() {
+  if (!clipHexEntry_.isEmpty()) {
+    clipHexEntry_.clear();
+    setStatus(QStringLiteral("Hex cancelled"));
+    update();
+    return;
+  }
+  if (clipLiftActive_) {
+    cancelClipLift();
+    dragging_ = false;
+    setStatus(QStringLiteral("Clip cancelled"));
+    updatePointerCursor();
+    update();
+    return;
+  }
+  if (!pixelClipRect_.isEmpty()) {
+    clearPixelClip();
+    dragging_ = false;
+    setStatus(QStringLiteral("Selection cancelled"));
+    updatePointerCursor();
+    update();
+    return;
+  }
   if (cutDragActive_) {
     cutDragActive_ = false;
     dragging_ = false;
@@ -3252,6 +4123,104 @@ void CaptureEditor::dismissOcrOverlay() {
   update();
 }
 
+void CaptureEditor::startSnapTrace(bool loop) {
+  snapTraceLoop_ = loop;
+  snapTraceRevealing_ = !loop;
+  if (!loop || !snapAnimTimer_.isActive())
+    snapAnimClock_.restart();
+  if (!snapAnimTimer_.isActive())
+    snapAnimTimer_.start();
+}
+
+void CaptureEditor::stopSnapTrace() {
+  snapAnimTimer_.stop();
+  snapTraceLoop_ = false;
+  snapTraceRevealing_ = false;
+}
+
+QPainterPath CaptureEditor::snapTracePath() const {
+  QPainterPath path;
+  if (marqueeSelecting_ && pixelClipTraceSnap_) {
+    const QRectF box = pixelClipTraceSnap_->normalized();
+    if (pixelClipShape_ == PixelClipShape::Lasso &&
+        pixelClipTracePoints_.size() >= 3) {
+      path.moveTo(pixelClipTracePoints_.constFirst());
+      for (int i = 1; i < pixelClipTracePoints_.size(); ++i)
+        path.lineTo(pixelClipTracePoints_.at(i));
+      path.closeSubpath();
+    } else if (pixelClipShape_ == PixelClipShape::Ellipse) {
+      path.addEllipse(box);
+    } else if (pixelClipTraceRadius_ >= 1.0) {
+      const qreal r = std::min({pixelClipTraceRadius_, box.width() / 2.0,
+                                box.height() / 2.0});
+      path.addRoundedRect(box, r, r);
+    } else {
+      path.addRect(box);
+    }
+    return path;
+  }
+  if (snapTraceRevealing_ && !pixelClipRect_.isEmpty())
+    return logicalClipPath();
+  return path;
+}
+
+void CaptureEditor::paintSnapTrace(QPainter &painter, qreal scale) const {
+  const QPainterPath path = snapTracePath();
+  if (path.isEmpty() || path.length() < 0.5)
+    return;
+  const QColor accent(QStringLiteral("#0a84ff"));
+  const qreal elapsed = static_cast<qreal>(snapAnimClock_.elapsed());
+  qreal t = elapsed / qreal(kSnapTraceMs);
+  if (snapTraceLoop_)
+    t = std::fmod(t, 1.0);
+  else
+    t = std::clamp(t, 0.0, 1.0);
+  painter.save();
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 36));
+  painter.drawPath(path);
+  painter.setBrush(Qt::NoBrush);
+  painter.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 70),
+                      1.6 / scale));
+  painter.drawPath(path);
+  if (!snapTraceLoop_) {
+    QPainterPath written;
+    appendPathPercentRange(written, path, 0.0, t);
+    painter.setPen(QPen(accent, 2.2 / scale, Qt::SolidLine, Qt::RoundCap,
+                        Qt::RoundJoin));
+    painter.drawPath(written);
+  }
+  QPainterPath trail;
+  const qreal trailStart = t - 0.18;
+  if (snapTraceLoop_ && trailStart < 0.0) {
+    appendPathPercentRange(trail, path, 1.0 + trailStart, 1.0);
+    appendPathPercentRange(trail, path, 0.0, t);
+  } else if (t > 0.0) {
+    appendPathPercentRange(trail, path, std::max(0.0, trailStart), t);
+  }
+  if (!trail.isEmpty()) {
+    QLinearGradient glow(trail.pointAtPercent(0.0), trail.pointAtPercent(1.0));
+    glow.setColorAt(
+        0.0, QColor(accent.red(), accent.green(), accent.blue(), 0));
+    glow.setColorAt(
+        0.65, QColor(accent.red(), accent.green(), accent.blue(), 160));
+    glow.setColorAt(1.0, QColor(255, 255, 255, 230));
+    painter.setPen(QPen(QBrush(glow), 3.0 / scale, Qt::SolidLine, Qt::RoundCap,
+                        Qt::RoundJoin));
+    painter.drawPath(trail);
+  }
+  const QPointF tip = path.pointAtPercent(t);
+  const qreal glowR = 7.0 / scale;
+  const qreal coreR = 3.4 / scale;
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 90));
+  painter.drawEllipse(tip, glowR, glowR);
+  painter.setPen(QPen(Qt::white, 1.2 / scale));
+  painter.setBrush(accent);
+  painter.drawEllipse(tip, coreR, coreR);
+  painter.restore();
+}
+
 void CaptureEditor::paintOcrOverlay(QPainter &painter, const QRectF &image,
                                     qreal scale) {
   if (ocrRegion_.isEmpty())
@@ -3460,8 +4429,21 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
 void CaptureEditor::handleToolbar(const QString &action) {
   const Tool toolBefore = tool_;
   const QString statusBefore = status_;
-  if (action == QStringLiteral("tool-select"))
-    tool_ = Tool::Select;
+  if (action == QStringLiteral("tool-select")) {
+    if (tool_ == Tool::Select)
+      cyclePixelClipShape();
+    else {
+      tool_ = Tool::Select;
+      pixelClipShape_ = PixelClipShape::Rect;
+    }
+  } else if (action == QStringLiteral("clip-shape-rect"))
+    setPixelClipShape(PixelClipShape::Rect);
+  else if (action == QStringLiteral("clip-shape-ellipse"))
+    setPixelClipShape(PixelClipShape::Ellipse);
+  else if (action == QStringLiteral("clip-shape-lasso"))
+    setPixelClipShape(PixelClipShape::Lasso);
+  else if (action == QStringLiteral("clip-shape-snap"))
+    setPixelClipSnapEnabled(!pixelClipSnapEnabled_);
   else if (action == QStringLiteral("tool-arrow"))
     tool_ = Tool::Arrow;
   else if (action == QStringLiteral("tool-line"))
@@ -3532,7 +4514,35 @@ void CaptureEditor::handleToolbar(const QString &action) {
   }
   else if (action == QStringLiteral("palette"))
     colorPaletteOpen_ = true;
-  else if (action.startsWith(QStringLiteral("color-"))) {
+  else if (action == QStringLiteral("clip-fill-transparent")) {
+    setClipFill(QColor(0, 0, 0, 0));
+    return;
+  } else if (action.startsWith(QStringLiteral("clip-fill-"))) {
+    const QString rest = action.sliced(10);
+    if (rest == QStringLiteral("custom")) {
+      usingCustomColor_ = true;
+      customColorPickerOpen_ = !customColorPickerOpen_;
+      if (clipFillOpaque(customColor_))
+        setClipFill(customColor_);
+      else
+        update();
+      return;
+    }
+    if (rest == QStringLiteral("surroundings")) {
+      usingCustomColor_ = false;
+      customColorPickerOpen_ = false;
+      const QColor sampled = clipSurroundingFill();
+      if (clipFillOpaque(sampled))
+        setClipFill(sampled);
+      return;
+    }
+    const int index = std::clamp(
+        rest.toInt(), 0, static_cast<int>(paletteConfig_.palette.size()) - 1);
+    usingCustomColor_ = false;
+    customColorPickerOpen_ = false;
+    setClipFill(paletteConfig_.palette.at(static_cast<std::size_t>(index)));
+    return;
+  } else if (action.startsWith(QStringLiteral("color-"))) {
     colorIndex_ = std::clamp(action.sliced(6).toInt(), 0,
                              static_cast<int>(paletteConfig_.palette.size()) - 1);
     usingCustomColor_ = false;
@@ -3566,6 +4576,8 @@ void CaptureEditor::handleToolbar(const QString &action) {
     close();
   if (tool_ != toolBefore && status_ == statusBefore)
     setStatus(toolStatus());
+  if (tool_ != Tool::Select && tool_ != Tool::Eyedropper)
+    clearPixelClip();
   updatePointerCursor();
   update();
 }
@@ -3591,6 +4603,50 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   if (capturePending_) {
     if (event->key() == Qt::Key_Escape)
       handleEscape();
+    event->accept();
+    return;
+  }
+  if (phase_ == Phase::Edit && !clipHexEntry_.isEmpty()) {
+    const int key = event->key();
+    if (key == Qt::Key_Escape) {
+      clipHexEntry_.clear();
+      setStatus(QStringLiteral("Hex cancelled"));
+      event->accept();
+      update();
+      return;
+    }
+    if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+      QColor color(clipHexEntry_);
+      clipHexEntry_.clear();
+      if (color.isValid())
+        setClipFill(color);
+      else
+        setStatus(QStringLiteral("Invalid hex colour"));
+      event->accept();
+      update();
+      return;
+    }
+    if (key == Qt::Key_Backspace) {
+      clipHexEntry_.chop(1);
+      if (clipHexEntry_.isEmpty())
+        clipHexEntry_ = QStringLiteral("#");
+      setStatus(QStringLiteral("Hole fill %1").arg(clipHexEntry_.toUpper()));
+      event->accept();
+      update();
+      return;
+    }
+    const QString text = event->text().toUpper();
+    if (text.size() == 1) {
+      const QChar ch = text.at(0);
+      if (ch.isDigit() || (ch >= QLatin1Char('A') && ch <= QLatin1Char('F'))) {
+        if (clipHexEntry_.size() < 7)
+          clipHexEntry_ += ch;
+        setStatus(QStringLiteral("Hole fill %1").arg(clipHexEntry_));
+        event->accept();
+        update();
+        return;
+      }
+    }
     event->accept();
     return;
   }
@@ -3691,6 +4747,23 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     return;
   }
 
+  if (clipLiftActive_) {
+    const int key = event->key();
+    const bool modifierOnly = key == Qt::Key_Shift || key == Qt::Key_Control ||
+                              key == Qt::Key_Alt || key == Qt::Key_Meta;
+    // QTest (and real keyboards) send the modifier press before Z. Cancelling
+    // on Control alone would leave the lift inactive so Ctrl+Z then undoes.
+    if (modifierOnly) {
+      event->accept();
+      return;
+    }
+    cancelClipLift();
+    dragging_ = false;
+    setStatus(QStringLiteral("Clip cancelled"));
+    updatePointerCursor();
+    update();
+    return;
+  }
   if (cutDragActive_) {
     // Any key here (Esc's own cancel already returned above) leaves the
     // A tool-switch key would otherwise leave the preview active because the
@@ -3801,7 +4874,12 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     selectedAnnotations_.clear();
     selectedAnnotation_ = -1;
   } else if (event->key() == Qt::Key_V) {
-    tool_ = Tool::Select;
+    if (tool_ == Tool::Select)
+      cyclePixelClipShape();
+    else {
+      tool_ = Tool::Select;
+      pixelClipShape_ = PixelClipShape::Rect;
+    }
   } else if (event->matches(QKeySequence::SelectAll)) {
     selectAllAnnotations();
   } else if (event->key() == Qt::Key_A) {
@@ -3878,13 +4956,24 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
              event->modifiers() == Qt::ShiftModifier) {
     cycleTextFont();
   } else if (event->key() == Qt::Key_T) {
-    const bool textSelected =
-        selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
-        annotations_.at(selectedAnnotation_).kind == Annotation::Kind::Text;
-    if (tool_ == Tool::Text || textSelected)
-      toggleTextBackground();
-    else
-      tool_ = Tool::Text;
+    if (!pixelClipRect_.isEmpty() && !clipLiftActive_ &&
+        (tool_ == Tool::Select || tool_ == Tool::Eyedropper)) {
+      cycleClipHoleFill();
+    } else {
+      const bool textSelected =
+          selectedAnnotation_ >= 0 &&
+          selectedAnnotation_ < annotations_.size() &&
+          annotations_.at(selectedAnnotation_).kind == Annotation::Kind::Text;
+      if (tool_ == Tool::Text || textSelected)
+        toggleTextBackground();
+      else
+        tool_ = Tool::Text;
+    }
+  } else if (event->key() == Qt::Key_NumberSign &&
+             tool_ == Tool::Select && !pixelClipRect_.isEmpty() &&
+             !clipLiftActive_) {
+    clipHexEntry_ = QStringLiteral("#");
+    setStatus(QStringLiteral("Hole fill # · type hex · Enter commits"));
   } else if (event->key() == Qt::Key_I) {
     if (tool_ != Tool::Eyedropper)
       toolBeforeEyedropper_ = tool_;
@@ -3909,9 +4998,12 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   } else if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_8) {
     colorIndex_ = event->key() - Qt::Key_1;
     usingCustomColor_ = false;
-    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
-        annotations_.at(selectedAnnotation_).kind !=
-            Annotation::Kind::Redaction) {
+    if (!pixelClipRect_.isEmpty() && !clipLiftActive_) {
+      setClipFill(annotationColor());
+    } else if (selectedAnnotation_ >= 0 &&
+               selectedAnnotation_ < annotations_.size() &&
+               annotations_.at(selectedAnnotation_).kind !=
+                   Annotation::Kind::Redaction) {
       annotations_[selectedAnnotation_].color = annotationColor();
       commitPatch({selectedAnnotation_});
     }
@@ -3924,6 +5016,8 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   // specific (a restyled layer, a toggled fill) have already set it.
   if (tool_ != toolBefore && status_ == statusBefore)
     setStatus(toolStatus());
+  if (tool_ != Tool::Select && tool_ != Tool::Eyedropper)
+    clearPixelClip();
   updatePointerCursor();
   update();
 }
@@ -3974,8 +5068,110 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
     if (!dragging_)
       updatePointerCursor();
   } else {
+    if (tool_ == Tool::Select && clipLiftActive_) {
+      const QRect previous = clipLiftRepaintRect();
+      updateClipLift(toUnclampedAnnotationPoint(cursor_));
+      update(previous.united(clipLiftRepaintRect()));
+      return;
+    }
+    if (tool_ == Tool::Select && pixelClipResizing_ && dragging_) {
+      Annotation box;
+      box.kind = Annotation::Kind::Rectangle;
+      box.start = originalPixelClip_.topLeft();
+      box.end = originalPixelClip_.bottomRight();
+      applyBoxResize(box, interaction_, toUnclampedAnnotationPoint(cursor_),
+                     originalPixelClip_);
+      QRectF updated = QRectF(box.start, box.end).normalized();
+      const QRectF bounds(QPointF(), selection_.size());
+      updated = updated.intersected(bounds);
+      if (pixelClipLargeEnough(updated)) {
+        pixelClipRect_ = updated;
+        if (originalPixelClipRadius_ > 0.0 &&
+            originalPixelClip_.width() > 0.0 &&
+            originalPixelClip_.height() > 0.0) {
+          const qreal f = std::min(updated.width() / originalPixelClip_.width(),
+                                   updated.height() / originalPixelClip_.height());
+          pixelClipRadius_ = originalPixelClipRadius_ * f;
+        }
+        if (!originalPixelClipPoints_.isEmpty() &&
+            originalPixelClip_.width() > 0.0 &&
+            originalPixelClip_.height() > 0.0) {
+          pixelClipPoints_.clear();
+          for (const QPointF &point : originalPixelClipPoints_) {
+            const qreal nx =
+                (point.x() - originalPixelClip_.left()) /
+                originalPixelClip_.width();
+            const qreal ny =
+                (point.y() - originalPixelClip_.top()) /
+                originalPixelClip_.height();
+            pixelClipPoints_.push_back(
+                QPointF(updated.left() + nx * updated.width(),
+                        updated.top() + ny * updated.height()));
+          }
+        }
+      }
+      update();
+      return;
+    }
     if (tool_ == Tool::Select && marqueeSelecting_) {
-      marqueeRect_ = QRectF(dragStart_, toAnnotationPoint(cursor_)).normalized();
+      const QPointF point = toAnnotationPoint(cursor_);
+      marqueeRect_ = QRectF(dragStart_, point).normalized();
+      if (pixelClipShape_ == PixelClipShape::Lasso) {
+        if (pixelClipPoints_.isEmpty())
+          pixelClipPoints_.push_back(dragStart_);
+        if (QLineF(pixelClipPoints_.constLast(), point).length() >= 1.0)
+          pixelClipPoints_.push_back(point);
+      }
+      const QRectF area = pixelClipDragBounds();
+      bool hitsLayer = false;
+      if (pixelClipLargeEnough(area)) {
+        for (const Annotation &annotation : annotations_) {
+          const QRectF bounds = annotationBounds(annotation);
+          if (!bounds.isEmpty() && area.contains(bounds)) {
+            hitsLayer = true;
+            break;
+          }
+        }
+      }
+      pixelClipTraceSnap_.reset();
+      pixelClipTraceRadius_ = 0;
+      pixelClipTracePoints_.clear();
+      if (!hitsLayer && pixelClipSnapEnabled_ && pixelClipLargeEnough(area)) {
+        if (const auto snapped =
+                snapLogicalObjectAt(area.center(), area, pixelClipShape_)) {
+          const bool fits =
+              pixelClipShape_ == PixelClipShape::Ellipse
+                  ? clipTraceSnapFits(area, snapped->box)
+                  : clipRectTraceSnapFits(area, snapped->box);
+          const bool lassoOk = pixelClipShape_ != PixelClipShape::Lasso ||
+                               snapped->contour.size() >= 8;
+          if (fits && lassoOk) {
+            pixelClipTraceSnap_ = snapped->box;
+            pixelClipTraceRadius_ = snapped->radius;
+            pixelClipTracePoints_ = snapped->contour;
+          }
+        }
+      }
+      const QString next =
+          pixelClipTraceSnap_
+              ? pixelClipShape_ == PixelClipShape::Lasso
+                    ? QStringLiteral("Snapped to outline · release to lock · "
+                                     "then drag inside to lift")
+                : pixelClipShape_ == PixelClipShape::Rect
+                    ? QStringLiteral("Snapped to rectangle · release to lock · "
+                                     "then drag inside to lift")
+                    : QStringLiteral("Snapped to circle · release to lock · "
+                                     "then drag inside to lift")
+              : !hitsLayer && pixelClipLargeEnough(area)
+                    ? QStringLiteral(
+                          "Release to lock these pixels · then drag inside to lift")
+                    : QStringLiteral("Drag to select layers");
+      if (status_ != next)
+        status_ = next;
+      if (pixelClipTraceSnap_)
+        startSnapTrace(true);
+      else if (snapTraceLoop_)
+        stopSnapTrace();
       update();
       return;
     }
@@ -4368,9 +5564,17 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
       return;
     }
   }
-  if (tool_ == Tool::Select && selectedAnnotations_.isEmpty()) {
+  for (const ToolbarButton &button : clipShapeStripButtons()) {
+    if (button.rect.contains(cursor_)) {
+      handleToolbar(button.action);
+      return;
+    }
+  }
+  if (tool_ == Tool::Select && selectedAnnotations_.isEmpty() &&
+      !clipLiftActive_ && pixelClipRect_.isEmpty()) {
     const int cropHandle = cropHandleAt(cursor_);
     if (cropHandle >= 0) {
+      clearPixelClip();
       originalSelection_ = selection_;
       cropDragImageRect_ = sourceFrameWidgetRect();
       interaction_ = static_cast<Interaction>(
@@ -4404,6 +5608,8 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     usingCustomColor_ = true;
     if (customColor_.hsvHueF() >= 0)
       customHue_ = customColor_.hsvHueF();
+    if (!pixelClipRect_.isEmpty() && !clipLiftActive_)
+      setClipFill(customColor_);
     if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
         annotations_.at(selectedAnnotation_).kind !=
             Annotation::Kind::Redaction &&
@@ -4420,13 +5626,46 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     // recolored selected so another color can be tried on it. Dropping both
     // meant that taking a color cost you your place twice over.
     tool_ = toolBeforeEyedropper_;
-    setStatus(QStringLiteral("Sampled %1").arg(
-        customColor_.name(QColor::HexRgb).toUpper()));
+    if (pixelClipRect_.isEmpty() || clipLiftActive_)
+      setStatus(QStringLiteral("Sampled %1").arg(
+          customColor_.name(QColor::HexRgb).toUpper()));
     updatePointerCursor();
     update();
     return;
   }
   if (tool_ == Tool::Select) {
+    if (!pixelClipRect_.isEmpty()) {
+      const QRectF locked = pixelClipRect_.normalized();
+      const qreal scale = std::max<qreal>(editScale(), 0.01);
+      const qreal pad = std::min({6.0 / scale, locked.width() / 4.0,
+                                  locked.height() / 4.0});
+      const QRectF inner = locked.adjusted(pad, pad, -pad, -pad);
+      if (inner.width() >= 1.0 && inner.height() >= 1.0 &&
+          inner.contains(point)) {
+        beginClipLift(point);
+        update();
+        return;
+      }
+      const Interaction clipHandle = pixelClipHandleAt(point);
+      if (clipHandle != Interaction::None) {
+        pixelClipResizing_ = true;
+        originalPixelClip_ = locked;
+        originalPixelClipPoints_ = pixelClipPoints_;
+        originalPixelClipRadius_ = pixelClipRadius_;
+        interaction_ = clipHandle;
+        dragStart_ = point;
+        dragging_ = true;
+        setStatus(QStringLiteral("Resize the clip region · drag inside to lift"));
+        update();
+        return;
+      }
+      if (locked.contains(point)) {
+        beginClipLift(point);
+        update();
+        return;
+      }
+      clearPixelClip();
+    }
     const bool additive =
         heldModifiers(event->modifiers()).testFlag(Qt::ControlModifier) ||
         heldModifiers(event->modifiers()).testFlag(Qt::MetaModifier);
@@ -4460,12 +5699,23 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     }
 
     if (hit < 0) {
+      if ((event->modifiers() & Qt::AltModifier) &&
+          pixelClipRect_.isEmpty()) {
+        trySnapAt(point);
+        update();
+        return;
+      }
       marqueeSelecting_ = true;
       marqueeAdditive_ = additive;
       marqueeRect_ = QRectF(point, point);
       dragStart_ = point;
       dragging_ = true;
       interaction_ = Interaction::None;
+      if (pixelClipShape_ == PixelClipShape::Lasso)
+        pixelClipPoints_ = {point};
+      pixelClipTraceSnap_.reset();
+      pixelClipTraceRadius_ = 0;
+      pixelClipTracePoints_.clear();
       setStatus(QStringLiteral("Drag to select layers"));
       update();
       return;
@@ -4670,8 +5920,22 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
     return;
   }
   if (tool_ == Tool::Select) {
+    if (clipLiftActive_) {
+      finishClipLift();
+      update();
+      return;
+    }
+    if (pixelClipResizing_) {
+      pixelClipResizing_ = false;
+      dragging_ = false;
+      interaction_ = Interaction::None;
+      setStatus(QStringLiteral("Selection ready — drag inside to clip out"));
+      updatePointerCursor();
+      update();
+      return;
+    }
     if (marqueeSelecting_) {
-      const QRectF area = marqueeRect_.normalized();
+      const QRectF area = pixelClipDragBounds();
       QVector<int> matches;
       if (area.width() >= 2.0 && area.height() >= 2.0) {
         for (int index = 0; index < annotations_.size(); ++index) {
@@ -4693,6 +5957,98 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
       marqueeRect_ = {};
       dragging_ = false;
       interaction_ = Interaction::None;
+      if (matches.isEmpty() && !pixelClipLargeEnough(area) &&
+          pixelClipSnapEnabled_) {
+        trySnapAt(dragStart_);
+        pixelClipPoints_.clear();
+        updatePointerCursor();
+        update();
+        return;
+      }
+      if (matches.isEmpty() && pixelClipLargeEnough(area)) {
+        const QRectF bounds(QPointF(), selection_.size());
+        const QRectF clipped = area.intersected(bounds);
+        if (pixelClipLargeEnough(clipped)) {
+          pixelClipRect_ = clipped;
+          selectedAnnotations_.clear();
+          selectedAnnotation_ = -1;
+          if (pixelClipShape_ == PixelClipShape::Lasso) {
+            if (pixelClipPoints_.size() < 3) {
+              pixelClipPoints_.clear();
+              pixelClipRect_ = {};
+              pixelClipLockedEllipse_ = false;
+            } else {
+              pixelClipLockedEllipse_ = false;
+            }
+          } else {
+            pixelClipPoints_.clear();
+            pixelClipLockedEllipse_ =
+                pixelClipShape_ == PixelClipShape::Ellipse;
+          }
+          bool snappedTrace = false;
+          if (pixelClipSnapEnabled_ && !pixelClipRect_.isEmpty()) {
+            const auto snapped =
+                snapLogicalObjectAt(pixelClipRect_.center(), pixelClipRect_,
+                                    pixelClipShape_);
+            if (snapped && pixelClipLargeEnough(snapped->box)) {
+              const bool fits =
+                  pixelClipShape_ == PixelClipShape::Ellipse
+                      ? clipTraceSnapFits(pixelClipRect_, snapped->box)
+                      : clipRectTraceSnapFits(pixelClipRect_, snapped->box);
+              const bool lassoOk = pixelClipShape_ != PixelClipShape::Lasso ||
+                                   snapped->contour.size() >= 8;
+              if (fits && lassoOk) {
+                pixelClipRect_ = snapped->box;
+                if (pixelClipShape_ == PixelClipShape::Lasso) {
+                  pixelClipPoints_ = snapped->contour;
+                  pixelClipLockedEllipse_ = false;
+                  pixelClipRadius_ = 0;
+                } else if (pixelClipShape_ == PixelClipShape::Ellipse) {
+                  pixelClipPoints_.clear();
+                  pixelClipLockedEllipse_ = true;
+                  pixelClipRadius_ = 0;
+                } else {
+                  pixelClipPoints_.clear();
+                  pixelClipLockedEllipse_ = false;
+                  pixelClipRadius_ = snapped->radius;
+                }
+                snappedTrace = true;
+              }
+            }
+          }
+          pixelClipTraceSnap_.reset();
+          pixelClipTraceRadius_ = 0;
+          pixelClipTracePoints_.clear();
+          if (!pixelClipRect_.isEmpty()) {
+            applyDefaultClipFill();
+            const QString kind = pixelClipShape_ == PixelClipShape::Lasso
+                                     ? QStringLiteral("outline")
+                                 : pixelClipShape_ == PixelClipShape::Ellipse
+                                     ? QStringLiteral("ellipse")
+                                     : QStringLiteral("rectangle");
+            setStatus(snappedTrace
+                          ? QStringLiteral(
+                                "Snapped to %1 · pick a hole fill or drag "
+                                "inside to clip out · Esc cancels")
+                                .arg(kind)
+                          : QStringLiteral(
+                                "Selection ready — pick a hole fill or drag "
+                                "inside to clip out · Esc cancels"));
+            if (snappedTrace)
+              startSnapTrace(false);
+            else
+              stopSnapTrace();
+            updatePointerCursor();
+            update();
+            return;
+          }
+        }
+      }
+      pixelClipPoints_.clear();
+      pixelClipTraceSnap_.reset();
+      pixelClipTraceRadius_ = 0;
+      pixelClipTracePoints_.clear();
+      stopSnapTrace();
       setStatus(selectedAnnotations_.isEmpty()
                     ? QStringLiteral("No layers selected")
                     : QStringLiteral("%1 layers selected · drag to move")
@@ -5060,7 +6416,8 @@ void CaptureEditor::updatePointerCursor() {
   }
   if ((colorPaletteOpen_ && colorPaletteRect().contains(cursor_)) ||
       (customColorPickerOpen_ && customColorPanelRect().contains(cursor_)) ||
-      (shapeMenuOpen_ && shapeMenuRect().contains(cursor_))) {
+      (shapeMenuOpen_ && shapeMenuRect().contains(cursor_)) ||
+      clipFillMenuRect().contains(cursor_)) {
     setCursor(Qt::PointingHandCursor);
     return;
   }
@@ -5081,8 +6438,27 @@ void CaptureEditor::updatePointerCursor() {
     return;
   }
   if (tool_ == Tool::Select) {
+    if (clipLiftActive_) {
+      setCursor(Qt::ClosedHandCursor);
+      return;
+    }
+    if (!pixelClipRect_.isEmpty()) {
+      const QPointF point = toAnnotationPoint(cursor_);
+      const Interaction handle = pixelClipHandleAt(point);
+      if (handle != Interaction::None) {
+        setCursor(handleCursorShape(handle));
+        return;
+      }
+      if (pixelClipRect_.normalized().contains(point)) {
+        setCursor(Qt::OpenHandCursor);
+        return;
+      }
+    }
     int cropHandle =
-        selectedAnnotations_.isEmpty() ? cropHandleAt(cursor_) : -1;
+        selectedAnnotations_.isEmpty() && !clipLiftActive_ &&
+                pixelClipRect_.isEmpty()
+            ? cropHandleAt(cursor_)
+            : -1;
     if (dragging_ && interaction_ >= Interaction::CropTopLeft) {
       cropHandle = static_cast<int>(interaction_) -
                    static_cast<int>(Interaction::CropTopLeft);
@@ -5126,8 +6502,18 @@ void CaptureEditor::updatePointerCursor() {
 }
 
 void CaptureEditor::refreshComposedCapture() {
-  capture_.source = composeCuts(pristineSource_, cuts_);
+  QImage composed = pristineSource_;
+  for (int index = 0; index < opIndex_ && index < ops_.size(); ++index) {
+    const Operation &op = ops_.at(index);
+    if (op.type == Operation::Type::Cut)
+      composed = removeBand(composed, op.cut.orientation, op.cut.sourceStart,
+                            op.cut.sourceEnd);
+    else if (op.type == Operation::Type::Clip)
+      fillHole(composed, op.clip);
+  }
+  capture_.source = std::move(composed);
   capture_.previewSize = composedLogicalSize(pristineLogicalSize_, cuts_);
+  composedPrefixHash_ = composedMutationHash(ops_, opIndex_);
   backdropKey_ = 0;           // force backdrop pixmap rebuild
   redactionBaseStale_ = true; // force redaction layer rebuild
   update();
@@ -5369,6 +6755,7 @@ void CaptureEditor::returnToSelect(bool windowMode) {
   editingAnnotation_ = -1;
   dragging_ = false;
   cutDragActive_ = false;
+  clearPixelClip();
   marqueeSelecting_ = false;
   interaction_ = Interaction::None;
   colorPaletteOpen_ = false;
@@ -5817,14 +7204,16 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   // image, the toolbar, a popup) simply covers it wherever they overlap.
   drawHotkeyLegend(
       painter, rect(),
-      {{QStringLiteral("V"), QStringLiteral("Select / move layer")},
+      {{QStringLiteral("V"), QStringLiteral("Select / cycle clip shape")},
+       {QStringLiteral("Snap"), QStringLiteral("Toggle · click object to fit")},
        {QStringLiteral("A"), QStringLiteral("Arrow")},
        {QStringLiteral("L"), QStringLiteral("Line")},
        {QStringLiteral("F / H"), QStringLiteral("Freehand / Highlighter")},
        {QStringLiteral("C"), QStringLiteral("Marker")},
        {QStringLiteral("R / E"), QStringLiteral("Rectangle / Ellipse")},
        {QStringLiteral("X"), QStringLiteral("Cut out a band")},
-       {QStringLiteral("T"), QStringLiteral("Text")},
+       {QStringLiteral("T"),
+        QStringLiteral("Text · T cycles hole fill when clipping")},
        {QStringLiteral("Double click"), QStringLiteral("Edit text layer")},
        {QStringLiteral("1–8"), QStringLiteral("Color")},
        {QStringLiteral("Wheel"), QStringLiteral("Zoom selected / tool size")},
@@ -5919,6 +7308,8 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     painter.drawImage(sourceImage, redactionLayer);
   else
     painter.drawImage(sourceImage, capture_.source, sourceRect(selection_));
+  if ((clipLiftActive_ || !pixelClipRect_.isEmpty()) && !snapTraceRevealing_)
+    paintClipHolePreview(painter, sourceImage);
 
   painter.restore();
 
@@ -6093,10 +7484,84 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   if (tool_ == Tool::Select && marqueeSelecting_ &&
       !marqueeRect_.isEmpty()) {
     const qreal scale = std::max<qreal>(editScale(), 0.01);
+    if (pixelClipTraceSnap_ && snapAnimTimer_.isActive()) {
+      paintSnapTrace(painter, scale);
+    } else {
     painter.setPen(
         QPen(QColor(QStringLiteral("#0a84ff")), 2.0 / scale));
     painter.setBrush(QColor(10, 132, 255, 38));
-    painter.drawRect(marqueeRect_.normalized());
+    const QRectF box = pixelClipTraceSnap_ ? *pixelClipTraceSnap_
+                                           : marqueeRect_.normalized();
+    if (pixelClipTraceSnap_ && pixelClipShape_ == PixelClipShape::Lasso &&
+        pixelClipTracePoints_.size() >= 2) {
+      QPainterPath path;
+      path.moveTo(pixelClipTracePoints_.constFirst());
+      for (int i = 1; i < pixelClipTracePoints_.size(); ++i)
+        path.lineTo(pixelClipTracePoints_.at(i));
+      path.closeSubpath();
+      painter.drawPath(path);
+    } else if (pixelClipShape_ == PixelClipShape::Lasso &&
+               pixelClipPoints_.size() >= 2 && !pixelClipTraceSnap_) {
+      QPainterPath path;
+      path.moveTo(pixelClipPoints_.constFirst());
+      for (int i = 1; i < pixelClipPoints_.size(); ++i)
+        path.lineTo(pixelClipPoints_.at(i));
+      painter.drawPath(path);
+    } else if (pixelClipShape_ == PixelClipShape::Ellipse ||
+               (pixelClipTraceSnap_ &&
+                pixelClipShape_ == PixelClipShape::Ellipse)) {
+      painter.drawEllipse(box);
+    } else if (pixelClipTraceSnap_ && pixelClipTraceRadius_ >= 1.0) {
+      const qreal r = std::min({pixelClipTraceRadius_, box.width() / 2.0,
+                                box.height() / 2.0});
+      painter.drawRoundedRect(box, r, r);
+    } else {
+      painter.drawRect(box);
+    }
+    }
+  }
+  if ((tool_ == Tool::Select || tool_ == Tool::Eyedropper) &&
+      !pixelClipRect_.isEmpty() && !clipLiftActive_) {
+    const qreal scale = std::max<qreal>(editScale(), 0.01);
+    if (snapTraceRevealing_ && snapAnimTimer_.isActive()) {
+      paintSnapTrace(painter, scale);
+    } else {
+    const QPainterPath path = logicalClipPath();
+    if (clipFillOpaque(clipFill_)) {
+      QColor overlay = clipFill_;
+      overlay.setAlpha(std::min(200, overlay.alpha()));
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(overlay);
+      painter.drawPath(path);
+    } else {
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(QColor(255, 214, 10, 40));
+      painter.drawPath(path);
+    }
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(
+        QPen(QColor(20, 20, 22, 230), 3.2 / scale, Qt::DashLine));
+    painter.drawPath(path);
+    painter.setPen(
+        QPen(QColor(QStringLiteral("#ffd60a")), 1.6 / scale, Qt::DashLine));
+    painter.drawPath(path);
+    painter.setPen(QPen(Qt::white, 1.0 / scale));
+    painter.setBrush(QColor(QStringLiteral("#0a84ff")));
+    const qreal radius = 5.0 / scale;
+    Annotation box;
+    box.kind = Annotation::Kind::Rectangle;
+    box.start = pixelClipRect_.topLeft();
+    box.end = pixelClipRect_.bottomRight();
+    for (const auto &item : annotationHandles(box))
+      painter.drawEllipse(item.first, radius, radius);
+    }
+  }
+  if (clipLiftActive_ && clipLiftSnapped_ && !clipLiftOrigin_.isEmpty()) {
+    const qreal scale = std::max<qreal>(editScale(), 0.01);
+    painter.setBrush(QColor(255, 214, 10, 36));
+    painter.setPen(
+        QPen(QColor(QStringLiteral("#ffd60a")), 1.6 / scale, Qt::DashLine));
+    painter.drawRect(clipLiftOrigin_);
   }
   if (cutDragActive_) {
     const qreal scale = std::max<qreal>(editScale(), 0.01);
@@ -6195,10 +7660,33 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   painter.restore();
   paintOcrOverlay(painter, sourceImage, editScale());
 
+  if (clipLiftActive_ && !clipLiftTile_.isNull()) {
+    if (!qFuzzyCompare(clipLiftPixmapScale_, editScale()))
+      rebuildClipLiftPixmap();
+    const qreal scale = std::max<qreal>(editScale(), 0.01);
+    const QRectF dest(sourceImage.topLeft() + clipLiftDest_.topLeft() * scale,
+                      clipLiftDest_.size() * scale);
+    if (!clipLiftSnapped_) {
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(QColor(0, 0, 0, 90));
+      painter.drawRect(dest.translated(2.0, 3.0));
+    }
+    if (!clipLiftPixmap_.isNull())
+      painter.drawPixmap(dest.topLeft(), clipLiftPixmap_);
+    else
+      painter.drawImage(dest, clipLiftTile_);
+    painter.setPen(QPen(QColor(255, 255, 255, 210), 1.0));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(dest);
+  }
+
   // Screenshot chrome means "crop this source", not "this is another
   // selected object". Keep it out of the layer-selection state entirely;
   // clicking empty canvas puts the layers down and brings cropping back.
-  if (tool_ == Tool::Select && selectedAnnotations_.isEmpty()) {
+  // A locked clip path is the selection (rounded when Snap finds a
+  // corner radius), so hide crop handles until the mask is cleared.
+  if (tool_ == Tool::Select && selectedAnnotations_.isEmpty() &&
+      !clipLiftActive_ && pixelClipRect_.isEmpty()) {
     painter.setPen(QPen(QColor(QStringLiteral("#0a84ff")), 1, Qt::DashLine));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(image.adjusted(-1, -1, 1, 1));
@@ -6221,6 +7709,11 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     painter.setPen(QPen(QColor(255, 255, 255, 34), 1));
     painter.setBrush(QColor(22, 22, 28, 248));
     painter.drawRoundedRect(colorPaletteRect(), 9, 9);
+  }
+  if (const QRectF clipFillMenu = clipFillMenuRect(); !clipFillMenu.isEmpty()) {
+    painter.setPen(QPen(QColor(255, 255, 255, 34), 1));
+    painter.setBrush(QColor(22, 22, 28, 248));
+    painter.drawRoundedRect(clipFillMenu, 9, 9);
   }
   if (customColorPickerOpen_) {
     const QRectF panel = customColorPanelRect();
@@ -6303,6 +7796,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   painter.setFont(buttonFont);
   QVector<qreal> toolbarDividers;
   const QVector<ToolbarButton> buttons = toolbarButtons(&toolbarDividers);
+  const QVector<ToolbarButton> clipStrip = clipShapeStripButtons();
   if (!toolbarDividers.isEmpty()) {
     const qreal scale = toolbarScale(width());
     const qreal barHeight = 36 * scale;
@@ -6326,7 +7820,17 @@ void CaptureEditor::paintEdit(QPainter &painter) {
         (button.action == QStringLiteral("custom-color") &&
          usingCustomColor_) ||
         (!usingCustomColor_ &&
-         button.action == QStringLiteral("color-%1").arg(colorIndex_));
+         button.action == QStringLiteral("color-%1").arg(colorIndex_)) ||
+        (button.action == QStringLiteral("clip-fill-transparent") &&
+         !clipFillOpaque(clipFill_)) ||
+        (button.action == QStringLiteral("clip-fill-custom") &&
+         clipFillOpaque(clipFill_) && usingCustomColor_ &&
+         clipFill_ == customColor_) ||
+        (button.action.startsWith(QStringLiteral("clip-fill-")) &&
+         button.action != QStringLiteral("clip-fill-transparent") &&
+         button.action != QStringLiteral("clip-fill-custom") &&
+         clipFillOpaque(clipFill_) && button.color.isValid() &&
+         button.color.rgb() == clipFill_.rgb());
     const bool hovered = button.rect.contains(cursor_);
     if (hovered)
       hoveredButton = &button;
@@ -6337,7 +7841,20 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     if (button.action == QStringLiteral("both"))
       painter.setBrush(QColor(QStringLiteral("#0a84ff")));
     painter.drawRoundedRect(button.rect, 8, 8);
-    if (button.color.isValid()) {
+    if (button.action == QStringLiteral("clip-fill-transparent")) {
+      const QPointF center = button.rect.center();
+      const QRectF swatch(center.x() - 7, center.y() - 7, 14, 14);
+      painter.setPen(QPen(selected ? Qt::white : QColor(255, 255, 255, 80),
+                          selected ? 2 : 1));
+      painter.setBrush(Qt::NoBrush);
+      painter.save();
+      QPainterPath clip;
+      clip.addEllipse(swatch);
+      painter.setClipPath(clip);
+      paintCheckerboard(painter, swatch, 3.5);
+      painter.restore();
+      painter.drawEllipse(swatch.center(), 7, 7);
+    } else if (button.color.isValid()) {
       const QPointF center = button.rect.center();
       painter.setPen(QPen(selected ? Qt::white : QColor(255, 255, 255, 80),
                           selected ? 2 : 1));
@@ -6353,6 +7870,31 @@ void CaptureEditor::paintEdit(QPainter &painter) {
                                            : button.action;
       drawToolbarIcon(painter, button.rect, icon, button.label,
                       QColor(245, 245, 247));
+    }
+  }
+  if (!clipStrip.isEmpty()) {
+    QFont chipFont = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+    chipFont.setPixelSize(10);
+    chipFont.setBold(true);
+    painter.setFont(chipFont);
+    for (const ToolbarButton &button : clipStrip) {
+      const bool on =
+          (button.action == QStringLiteral("clip-shape-rect") &&
+           pixelClipShape_ == PixelClipShape::Rect) ||
+          (button.action == QStringLiteral("clip-shape-ellipse") &&
+           pixelClipShape_ == PixelClipShape::Ellipse) ||
+          (button.action == QStringLiteral("clip-shape-lasso") &&
+           pixelClipShape_ == PixelClipShape::Lasso) ||
+          (button.action == QStringLiteral("clip-shape-snap") &&
+           pixelClipSnapEnabled_);
+      painter.setPen(QPen(QColor(255, 255, 255, 34), 1));
+      painter.setBrush(on ? QColor(QStringLiteral("#0a84ff"))
+                          : QColor(30, 32, 38, 230));
+      painter.drawRoundedRect(button.rect, 9, 9);
+      painter.setPen(QColor(QStringLiteral("#f5f5f7")));
+      painter.drawText(button.rect, Qt::AlignCenter, button.label);
+      if (button.rect.contains(cursor_))
+        hoveredButton = &button;
     }
   }
   if (textSizeMenuOpen_ && !colorPaletteOpen_ && !customColorPickerOpen_) {

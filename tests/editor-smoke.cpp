@@ -4,6 +4,8 @@
 #include "output-config.hpp"
 #include "cli-path.hpp"
 #include "clipboard-smoke.hpp"
+#include "clip-mapping-smoke.hpp"
+#include "clip-smoke.hpp"
 #include "cut-mapping-smoke.hpp"
 #include "cut-smoke.hpp"
 #include "editor.hpp"
@@ -7828,6 +7830,10 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 96;
   }
+  if (!runClipMappingSmoke(application, outputRoot, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 97;
+  }
   const QString snapshotPath = temporarySnapshotPath();
   QFile::remove(snapshotPath);
   const QString savedRoot = QDir(outputRoot).filePath(QStringLiteral("saved"));
@@ -8873,6 +8879,12 @@ int main(int argc, char **argv) {
   QString cutError;
   if (!runCutSmoke(cutError)) {
     qWarning().noquote() << "cut smoke failed:" << cutError;
+    return EXIT_FAILURE;
+  }
+
+  QString clipError;
+  if (!runClipSmoke(clipError)) {
+    qWarning().noquote() << "clip smoke failed:" << clipError;
     return EXIT_FAILURE;
   }
 

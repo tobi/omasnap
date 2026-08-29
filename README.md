@@ -37,6 +37,24 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
   mesh-gradient backdrops, and rendered drop shadows on standard backdrop cards.
 - Cut tool: drag across a band of the image to remove it and collapse the gap, with a
   live preview and dashed seam marker while dragging; annotations shift to follow.
+- Clip-out: in Select, `V` cycles clip shape (rectangle, ellipse, lasso) and a
+  strip under the toolbar shows those chips plus a Snap toggle. A large enough
+  empty drag that hits no layers locks a pixel mask of the current shape
+  (lasso keeps the traced path even if you close back near the start). Snap
+  is **on by default**: drag a box around the object (leave a little
+  background in the corners) then Snap reads what is connected under the
+  pointer inside that box. Toggle the Snap chip to draw a free mask. A scan-dot traces the outline (OCR-style) then the mask locks. Rect
+  keeps gray chrome, not just the colourful bits. Ellipse fits a circle that
+  covers protrusions (a pin on a badge). Lasso follows the silhouette.
+  Click Snap again with a mask locked to refine it. Rect + Snap uses the
+  object's corner radius so the overlay matches a rounded card, not a
+  sharp box. Crop handles hide while that mask is locked. A fly-out picks the
+  hole infill (match surroundings by default; `T` cycles surroundings →
+  Sample from image → transparent; `1`–`8` / `I` / `#` while the mask is
+  locked). Drag inside to lift a layer with alpha outside the path.
+  Release near the hole to snap back; elsewhere to commit. Esc / Ctrl+Z
+  during a lift cancels only the lift. Distinct from Cut, which collapses a
+  band. `R` / `E` / `F` still arm the drawing tools.
 - Pin a finished capture as a bottom-right always-on-top layer surface, launched
   from the same `omasnap` executable and visible on every workspace.
 - Crash-resistant working documents under `/run/user/<UID>/omasnap/` (falling back to
@@ -265,8 +283,10 @@ of a new screenshot. Finishing a reopened capture replaces its shelf entry.
 
 ### Configuration (optional)
 
-Omasnap has no settings UI and runs fine with no config at all. If you want to
-change where screenshots land or what they are called, create
+Omasnap has no settings UI and runs fine with no config at all. Clip-out
+defaults (Snap on, hole fill match-surroundings, `T` to cycle fill) are the
+product, not INI keys. If you want to change where screenshots land or what
+they are called, create
 `~/.config/omasnap/omasnap.conf` (INI format); every key is optional:
 
 ```ini
@@ -350,7 +370,7 @@ without reaching for the pointer.
 
 | Input | Action |
 |---|---|
-| `V` | Select/move/resize layers; carrying one past the source grows the canvas; drag empty canvas for a marquee; multi-select outlines each layer without treating the canvas as one layer; wheel scales the selected layer |
+| `V` | Select/move/resize layers; carrying one past the source grows the canvas; press again to cycle clip shape (rectangle, ellipse, lasso); Snap is a strip toggle (Rect snaps to a square/rounded rectangle, Ellipse/Lasso to a circle); drag empty canvas for a marquee; a large enough empty drag that hits no layers locks a pixel mask of the current shape (lasso uses the traced path unless Snap magnets to a circle; crop handles hide while that mask is locked) with a hole-fill fly-out (match surroundings by default; `T` cycles fill; `1`–`8` / Sample from image / `#` hex while locked) — drag inside to lift it out as a new layer (repeat); multi-select outlines each layer without treating the canvas as one layer; wheel scales the selected layer (ignored on a clip) |
 | `A` | Arrow |
 | `S` | Spotlight/loupe; press again to cycle ellipse, rectangle, rounded |
 | `L` | Straight line |

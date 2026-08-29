@@ -1,6 +1,7 @@
 /** @fileoverview Declares screenshot capture, rendering, and output types. */
 #pragma once
 
+#include "clip.hpp"
 #include "cut.hpp"
 
 #include <cstdint>
@@ -72,7 +73,8 @@ struct Annotation {
     Ellipse,
     Text,
     Redaction,
-    Spotlight
+    Spotlight,
+    Clip
   };
 
   Kind kind = Kind::Arrow;
@@ -93,6 +95,10 @@ struct Annotation {
   /// Typeface is a layer property so reopened and duplicated labels keep it.
   TextFont textFont = TextFont::Neucha;
   quint64 id = 0;
+  /// Pixels of a clip layer, reconstructed on replay from the Clip op (or
+  /// loaded from a duplicated layer's PNG). Not a drawing-app raster: it is
+  /// the torn-off screenshot region. Implicitly shared.
+  QImage image;
 
   bool operator==(const Annotation &) const = default;
 };
@@ -105,7 +111,8 @@ struct Operation {
     Annotate,
     Patch,
     Delete,
-    Cut
+    Cut,
+    Clip
   };
 
   Type type = Type::Annotate;
@@ -116,6 +123,7 @@ struct Operation {
   QVector<Annotation> annotations;
   QVector<quint64> ids;
   CutOp cut;
+  ClipOp clip;
 
   bool operator==(const Operation &) const = default;
 };
