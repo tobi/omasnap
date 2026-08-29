@@ -1821,6 +1821,8 @@ QJsonObject operationToJson(const Operation &operation) {
     object.insert(QStringLiteral("sourceEnd"), operation.cut.sourceEnd);
     object.insert(QStringLiteral("logicalStart"), operation.cut.logicalStart);
     object.insert(QStringLiteral("logicalEnd"), operation.cut.logicalEnd);
+    if (operation.cut.insert)
+      object.insert(QStringLiteral("insert"), true);
     break;
   }
   return object;
@@ -1894,6 +1896,7 @@ bool operationFromJson(const QJsonObject &object, Operation &operation,
         object.value(QStringLiteral("logicalStart")).toInt();
     operation.cut.logicalEnd =
         object.value(QStringLiteral("logicalEnd")).toInt();
+    operation.cut.insert = object.value(QStringLiteral("insert")).toBool();
     return true;
   }
   error = QStringLiteral("Operation log has an unknown operation type");
