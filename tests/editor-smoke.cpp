@@ -2969,6 +2969,292 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+enum class RevealGesture {
+  SaveShortcut,
+  BothShortcut,
+  SaveClick,
+  BothClick,
+  PlainSave
+};
+
+struct RevealExpectation {
+  RevealGesture gesture;
+  QString label;
+  bool copied;
+  bool revealed;
+};
+
+struct RevealSmokeFiles {
+  QString screenshots;
+  QString revealLog;
+  QString clipboardPng;
+};
+
+bool waitForSmokeFile(QApplication &application, const QString &path) {
+  QElapsedTimer timer;
+  timer.start();
+  while (!QFile::exists(path) && timer.elapsed() < 3000) {
+    application.processEvents();
+    QThread::msleep(1);
+  }
+  return QFile::exists(path);
+}
+
+QStringList readArgumentLog(const QString &path) {
+  QFile file(path);
+  return file.open(QIODevice::ReadOnly)
+             ? QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts)
+             : QStringList{};
+}
+
+void restoreEnvironmentVariable(const char *name, const QByteArray &value) {
+  if (value.isEmpty())
+    qunsetenv(name);
+  else
+    qputenv(name, value);
+}
+
+bool runRevealGestureSmoke(QApplication &application,
+                           const CaptureData &capture,
+                           const RevealExpectation &expectation,
+                           const RevealSmokeFiles &files,
+                           const QString &notificationLog, QString &savedPath,
+                           QString &error) {
+  QDir(files.screenshots).removeRecursively();
+  QFile::remove(files.revealLog);
+  QFile::remove(files.clipboardPng);
+  QFile::remove(notificationLog);
+  qputenv("OMASNAP_TEST_NOTIFICATION_LOG", notificationLog.toUtf8());
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File);
+  editor.setSuppressSnapshots(true);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+  if (expectation.gesture == RevealGesture::BothShortcut) {
+    QTest::keyClick(&editor, Qt::Key_T);
+    QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                      editor.toScreenPointForTest({80, 80}).toPoint());
+    QWidget *inlineEditor = QApplication::focusWidget();
+    if (!inlineEditor) {
+      error = QStringLiteral(
+          "Could not open a label before testing selected Shift+Enter");
+      return false;
+    }
+    QTest::keyClicks(inlineEditor, QStringLiteral("Selected label"));
+    QTest::keyClick(inlineEditor, Qt::Key_Escape);
+    application.processEvents();
+    if (editor.annotationCountForTest() != 1 ||
+        editor.selectedCountForTest() != 1) {
+      error = QStringLiteral(
+          "Could not select a committed label before Shift+Enter");
+      return false;
+    }
+  }
+  switch (expectation.gesture) {
+  case RevealGesture::SaveShortcut:
+    QTest::keyClick(&editor, Qt::Key_S,
+                    Qt::ControlModifier | Qt::ShiftModifier);
+    break;
+  case RevealGesture::BothShortcut:
+    QTest::keyClick(&editor, Qt::Key_Return, Qt::ShiftModifier);
+    break;
+  case RevealGesture::SaveClick:
+  case RevealGesture::BothClick:
+    QTest::keyPress(&editor, Qt::Key_Shift);
+    QTest::mouseClick(&editor, Qt::LeftButton, Qt::ShiftModifier,
+                      editor.toolbarButtonCenterForTest(
+                          expectation.gesture == RevealGesture::SaveClick
+                              ? QStringLiteral("save")
+                              : QStringLiteral("both")));
+    QTest::keyRelease(&editor, Qt::Key_Shift);
+    break;
+  case RevealGesture::PlainSave:
+    QTest::keyClick(&editor, Qt::Key_S, Qt::ControlModifier);
+    break;
+  }
+  editor.waitForExport();
+  static_cast<void>(waitForSmokeFile(application, notificationLog));
+  if (expectation.revealed)
+    static_cast<void>(waitForSmokeFile(application, files.revealLog));
+  else {
+    QThread::msleep(50);
+    application.processEvents();
+  }
+
+  const QStringList saved =
+      QDir(files.screenshots)
+          .entryList({QStringLiteral("*.png")}, QDir::Files);
+  const bool copied = QFile::exists(files.clipboardPng);
+  const bool revealed = QFile::exists(files.revealLog);
+  if (editor.isVisible() || saved.size() != 1 || copied != expectation.copied ||
+      revealed != expectation.revealed) {
+    error = QStringLiteral("%1 failed (saved=%2, copied=%3, revealed=%4)")
+                .arg(expectation.label)
+                .arg(saved.size())
+                .arg(copied)
+                .arg(revealed);
+    return false;
+  }
+
+  savedPath = QDir(files.screenshots).filePath(saved.constFirst());
+  if (!revealed)
+    return true;
+  const QStringList expected{
+      QStringLiteral("--"), QStringLiteral("nautilus"),
+      QStringLiteral("--select"),
+      QUrl::fromLocalFile(QFileInfo(savedPath).absoluteFilePath())
+          .toString(QUrl::FullyEncoded)};
+  const QStringList actual = readArgumentLog(files.revealLog);
+  if (actual == expected)
+    return true;
+  error = QStringLiteral("%1 reveal command was %2, expected %3")
+              .arg(expectation.label, actual.join(QStringLiteral(" | ")),
+                   expected.join(QStringLiteral(" | ")));
+  return false;
+}
+
+bool runRevealSavedScreenshotSmoke(QApplication &application, QString &error) {
+  QTemporaryDir root;
+  if (!root.isValid()) {
+    error =
+        QStringLiteral("Could not create reveal-screenshot smoke directory");
+    return false;
+  }
+
+  const auto writeExecutable = [](const QString &path,
+                                  const QByteArray &contents) {
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(contents) != contents.size())
+      return false;
+    file.close();
+    return QFile::setPermissions(path, QFileDevice::ReadOwner |
+                                           QFileDevice::WriteOwner |
+                                           QFileDevice::ExeOwner);
+  };
+  const QString commands = QDir(root.path()).filePath(QStringLiteral("bin"));
+  if (!QDir().mkpath(commands)) {
+    error =
+        QStringLiteral("Could not create reveal-screenshot command directory");
+    return false;
+  }
+  const QByteArray revealScript = QByteArrayLiteral(
+      "#!/bin/sh\n"
+      "printf '%s\\n' \"$@\" > \"$OMASNAP_TEST_REVEAL_LOG\"\n");
+  const QByteArray notificationScript = QByteArrayLiteral(
+      "#!/bin/sh\n"
+      "printf '%s\\n' \"$@\" > \"$OMASNAP_TEST_NOTIFICATION_LOG\"\n");
+  const QByteArray copyScript =
+      QByteArrayLiteral("#!/bin/sh\ncat > \"$OMASNAP_TEST_CLIPBOARD_PNG\"\n");
+  const QByteArray pasteScript =
+      QByteArrayLiteral("#!/bin/sh\ncat \"$OMASNAP_TEST_CLIPBOARD_PNG\"\n");
+  if (!writeExecutable(QDir(commands).filePath(QStringLiteral("uwsm-app")),
+                       revealScript) ||
+      !writeExecutable(
+          QDir(commands).filePath(QStringLiteral("omarchy-notification-send")),
+          notificationScript) ||
+      !writeExecutable(QDir(commands).filePath(QStringLiteral("wl-copy")),
+                       copyScript) ||
+      !writeExecutable(QDir(commands).filePath(QStringLiteral("wl-paste")),
+                       pasteScript)) {
+    error = QStringLiteral("Could not create reveal-screenshot commands");
+    return false;
+  }
+
+  const QByteArray previousPath = qgetenv("PATH");
+  const QByteArray previousScreenshotDir = qgetenv("OMASNAP_SCREENSHOT_DIR");
+  const QByteArray previousRevealLog = qgetenv("OMASNAP_TEST_REVEAL_LOG");
+  const QByteArray previousClipboard = qgetenv("OMASNAP_TEST_CLIPBOARD_PNG");
+  const QByteArray previousNotificationLog =
+      qgetenv("OMASNAP_TEST_NOTIFICATION_LOG");
+  const QString previousCurrentPath = QDir::currentPath();
+  const auto restoreEnvironment = qScopeGuard([&] {
+    QDir::setCurrent(previousCurrentPath);
+    qputenv("PATH", previousPath);
+    restoreEnvironmentVariable("OMASNAP_SCREENSHOT_DIR", previousScreenshotDir);
+    restoreEnvironmentVariable("OMASNAP_TEST_REVEAL_LOG", previousRevealLog);
+    restoreEnvironmentVariable("OMASNAP_TEST_CLIPBOARD_PNG", previousClipboard);
+    restoreEnvironmentVariable("OMASNAP_TEST_NOTIFICATION_LOG",
+                               previousNotificationLog);
+  });
+
+  if (!QDir::setCurrent(root.path())) {
+    error = QStringLiteral("Could not enter reveal-screenshot smoke directory");
+    return false;
+  }
+  const RevealSmokeFiles files{
+      QStringLiteral("relative-screenshots"),
+      QDir(root.path()).filePath(QStringLiteral("reveal-arguments")),
+      QDir(root.path()).filePath(QStringLiteral("clipboard.png"))};
+  qputenv("PATH", commands.toUtf8() + ':' + previousPath);
+  qputenv("OMASNAP_SCREENSHOT_DIR", files.screenshots.toUtf8());
+  qputenv("OMASNAP_TEST_REVEAL_LOG", files.revealLog.toUtf8());
+  qputenv("OMASNAP_TEST_CLIPBOARD_PNG", files.clipboardPng.toUtf8());
+
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 320, 240};
+  capture.monitor.pixelSize = {320, 240};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(320, 240, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#183048")));
+  capture.previewSize = capture.source.size();
+
+  const std::array expectations{
+      RevealExpectation{RevealGesture::SaveShortcut,
+                        QStringLiteral("Ctrl+Shift+S"), false, true},
+      RevealExpectation{RevealGesture::BothShortcut,
+                        QStringLiteral("Shift+Enter with selected text"), true,
+                        true},
+      RevealExpectation{RevealGesture::SaveClick,
+                        QStringLiteral("Shift-click Save"), false, true},
+      RevealExpectation{RevealGesture::BothClick,
+                        QStringLiteral("Shift-click Copy+Save"), true, true},
+      RevealExpectation{RevealGesture::PlainSave, QStringLiteral("Ctrl+S"),
+                        false, false}};
+  QString savedPath;
+  for (std::size_t index = 0; index < expectations.size(); ++index) {
+    const QString notificationLog =
+        QDir(root.path())
+            .filePath(QStringLiteral("notification-%1").arg(index));
+    if (!runRevealGestureSmoke(application, capture, expectations.at(index),
+                               files, notificationLog, savedPath, error))
+      return false;
+  }
+
+  const QString notificationActionLog =
+      QDir(root.path()).filePath(QStringLiteral("notification-action"));
+  qputenv("OMASNAP_TEST_NOTIFICATION_LOG", notificationActionLog.toUtf8());
+  sendCaptureNotification(QStringLiteral("Screenshot saved"), savedPath);
+  if (!waitForSmokeFile(application, notificationActionLog)) {
+    error = QStringLiteral("Saved notification did not launch");
+    return false;
+  }
+  const QStringList notificationActual = readArgumentLog(notificationActionLog);
+  const QString savedUrl =
+      QUrl::fromLocalFile(QFileInfo(savedPath).absoluteFilePath())
+          .toString(QUrl::FullyEncoded);
+  const int execIndex = notificationActual.indexOf(QStringLiteral("--exec"));
+  const QStringList notificationExec =
+      execIndex < 0 ? QStringList{} : notificationActual.sliced(execIndex + 1);
+  const int imageIndex = notificationActual.indexOf(QStringLiteral("--image"));
+  const QString notificationImage =
+      imageIndex < 0 || imageIndex + 1 >= notificationActual.size()
+          ? QString()
+          : notificationActual.at(imageIndex + 1);
+  const QStringList expectedExec{
+      QStringLiteral("uwsm-app"), QStringLiteral("--"),
+      QStringLiteral("nautilus"), QStringLiteral("--select"), savedUrl};
+  if (notificationActual.contains(QStringLiteral("Click to show in folder")) &&
+      notificationImage == QFileInfo(savedPath).absoluteFilePath() &&
+      notificationExec == expectedExec)
+    return true;
+  error = QStringLiteral("Saved notification did not offer reveal: %1")
+              .arg(notificationActual.join(QStringLiteral(" | ")));
+  return false;
+}
+
 /** Checks that the wheel retargets the spotlight under the cursor. */
 bool runSpotlightWheelSmoke(QApplication &application, QString &error) {
   CaptureData capture;
@@ -3459,26 +3745,6 @@ bool runRecentsShelfSmoke(QApplication &application, QString &error) {
       return false;
     }
   }
-  return true;
-}
-
-/** Quotes the same way sendCaptureNotification builds --exec. */
-bool runShellQuoteCheck(QString &error) {
-  if (shellQuote(QStringLiteral("omasnap")) != QStringLiteral("'omasnap'")) {
-    error = QStringLiteral("shellQuote did not wrap a simple token");
-    return false;
-  }
-  if (shellQuote(QStringLiteral("omasnap /tmp/a.png")) !=
-      QStringLiteral("'omasnap /tmp/a.png'")) {
-    error = QStringLiteral("shellQuote did not keep spaces inside quotes");
-    return false;
-  }
-  if (shellQuote(QStringLiteral("it's")) != QStringLiteral("'it'\"'\"'s'")) {
-    error = QStringLiteral("shellQuote did not escape a single quote (%1)")
-                .arg(shellQuote(QStringLiteral("it's")));
-    return false;
-  }
-  sendCaptureNotification(QStringLiteral("smoke"));
   return true;
 }
 
@@ -7696,6 +7962,10 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 82;
   }
+  if (!runRevealSavedScreenshotSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 135;
+  }
   if (!runPinLayoutSmoke(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 77;
@@ -7916,10 +8186,6 @@ int main(int argc, char **argv) {
   if (!runRecentsShelfSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 120;
-  }
-  if (!runShellQuoteCheck(snapshotError)) {
-    qWarning().noquote() << snapshotError;
-    return 83;
   }
   if (!runOpLogCapKeepsLeadingCrop(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

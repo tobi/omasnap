@@ -553,10 +553,10 @@ private:
   void replayLog();
   void redoEdit();
   void selectWindowInDirection(int key);
-  void finish(OutputMode mode);
+  void finish(OutputMode mode, bool reveal = false);
   void completeFinish(const FinishResult &result);
   void handleEscape();
-  void handleToolbar(const QString &action);
+  void handleToolbar(const QString &action, bool reveal);
   void paintEdit(QPainter &painter);
   void paintSelect(QPainter &painter);
   void refreshBackdropCache();
