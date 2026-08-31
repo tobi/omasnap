@@ -90,6 +90,12 @@ void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
     painter.drawRect(QRectF(5, 14.5, 14, 5.5));
     painter.setPen(QPen(color, 1.4, Qt::DashLine, Qt::FlatCap));
     painter.drawLine(QPointF(5, 12), QPointF(19, 12));
+  } else if (action == QStringLiteral("tool-cut-insert")) {
+    // Two image halves opening, plus in the gap (insert a band).
+    painter.drawRect(QRectF(5, 3, 14, 5));
+    painter.drawRect(QRectF(5, 16, 14, 5));
+    painter.drawLine(QPointF(12, 9.5), QPointF(12, 14.5));
+    painter.drawLine(QPointF(9.5, 12), QPointF(14.5, 12));
   } else if (action == QStringLiteral("tool-text")) {
     painter.drawLine(QPointF(5, 5), QPointF(19, 5));
     painter.drawLine(QPointF(12, 5), QPointF(12, 19));

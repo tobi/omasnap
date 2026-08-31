@@ -89,6 +89,55 @@ bool runCutSmoke(QString &error) {
     return false;
   }
 
+  if (shiftForInsert(3.0, 5.0, 4.0) != 3.0 ||
+      shiftForInsert(5.0, 5.0, 4.0) != 9.0 ||
+      shiftForInsert(12.0, 5.0, 4.0) != 16.0) {
+    error = QStringLiteral("shiftForInsert wrong");
+    return false;
+  }
+
+  // Horizontal insert at row 2 of width 2: 10,20, gap, gap, 30,40.
+  const QImage inserted = insertBand(source, Qt::Horizontal, 2, 4);
+  if (inserted.size() != QSize(4, 6) || redAt(inserted, 0, 0) != 10 ||
+      redAt(inserted, 0, 1) != 20 || inserted.pixelColor(0, 2).alpha() != 0 ||
+      inserted.pixelColor(0, 3).alpha() != 0 || redAt(inserted, 0, 4) != 30 ||
+      redAt(inserted, 0, 5) != 40) {
+    error = QStringLiteral("horizontal insertBand produced wrong image");
+    return false;
+  }
+  if (insertBand(source, Qt::Horizontal, 2, 2) != source) {
+    error = QStringLiteral("empty insertBand changed the image");
+    return false;
+  }
+
+  // Derive insertion size after clamping both bounds. Mapping round-off may
+  // put an endpoint just outside the source; it must not create extra space.
+  const QImage clampedRows = insertBand(source, Qt::Horizontal, -5, 1);
+  const QImage columnSource = indexedImage({{1, 2, 3, 4}, {1, 2, 3, 4}});
+  const QImage clampedCols = insertBand(columnSource, Qt::Vertical, 3, 99);
+  if (clampedRows.size() != QSize(4, 5) ||
+      clampedRows.pixelColor(0, 0).alpha() != 0 ||
+      redAt(clampedRows, 0, 1) != 10 || redAt(clampedRows, 0, 4) != 40 ||
+      clampedCols.size() != QSize(5, 2) || redAt(clampedCols, 2, 0) != 3 ||
+      clampedCols.pixelColor(3, 0).alpha() != 0 ||
+      redAt(clampedCols, 4, 0) != 4) {
+    error = QStringLiteral("insertBand bounds handling wrong");
+    return false;
+  }
+
+  CutOp insertOp{Qt::Vertical, 1, 3, 1, 3, true};
+  const QImage viaOp = applyCutOp(
+      indexedImage({{1, 2, 3, 4}, {1, 2, 3, 4}}), insertOp);
+  if (viaOp.size() != QSize(6, 2) || redAt(viaOp, 0, 0) != 1 ||
+      viaOp.pixelColor(1, 0).alpha() != 0 || redAt(viaOp, 3, 0) != 2) {
+    error = QStringLiteral("applyCutOp insert was not a vertical gap");
+    return false;
+  }
+  if (composedLogicalSize(QSize(100, 80), {insertOp}) != QSize(102, 80)) {
+    error = QStringLiteral("composedLogicalSize did not grow on insert");
+    return false;
+  }
+
   // Vertical band removal must preserve alpha: create ARGB32 image with
   // semi-transparent pixel, remove a vertical band, verify alpha is unchanged.
   QImage alphaSource(4, 2, QImage::Format_ARGB32);

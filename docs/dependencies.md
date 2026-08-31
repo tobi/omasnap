@@ -37,6 +37,7 @@ no user-visible benefit.
 | `wl-copy` / `wl-paste` | Writing PNG/text to the Wayland clipboard, and verifying the write | Yes |
 | `tesseract` | OCR text recognition | Only if OCR is used; missing tesseract fails just that action |
 | `omarchy-notification-send` | Capture-finished notifications | No — falls back silently if absent (checked with `command -v` semantics via failed `QProcess::startDetached`) |
+| `uwsm-app` / `nautilus` | Reveal a saved screenshot selected in Files | No — missing/failed reveal never invalidates a successful save |
 
 Each of these is invoked through the same small `runProcess`/
 `QProcess::startDetached` helpers in `src/capture.cpp`, from a background

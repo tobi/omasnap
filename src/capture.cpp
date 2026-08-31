@@ -1821,6 +1821,8 @@ QJsonObject operationToJson(const Operation &operation) {
     object.insert(QStringLiteral("sourceEnd"), operation.cut.sourceEnd);
     object.insert(QStringLiteral("logicalStart"), operation.cut.logicalStart);
     object.insert(QStringLiteral("logicalEnd"), operation.cut.logicalEnd);
+    if (operation.cut.insert)
+      object.insert(QStringLiteral("insert"), true);
     break;
   }
   return object;
@@ -1894,6 +1896,7 @@ bool operationFromJson(const QJsonObject &object, Operation &operation,
         object.value(QStringLiteral("logicalStart")).toInt();
     operation.cut.logicalEnd =
         object.value(QStringLiteral("logicalEnd")).toInt();
+    operation.cut.insert = object.value(QStringLiteral("insert")).toBool();
     return true;
   }
   error = QStringLiteral("Operation log has an unknown operation type");
@@ -2024,9 +2027,29 @@ QString recognizeText(const QImage &image, QString &error) {
   return text;
 }
 
-QString shellQuote(QString value) {
-  value.replace('\'', QStringLiteral("'\"'\"'"));
-  return QStringLiteral("'%1'").arg(value);
+namespace {
+struct RevealCommand {
+  QString program;
+  QStringList arguments;
+};
+
+QString absoluteLocalFileUrl(const QString &path) {
+  return QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath())
+      .toString(QUrl::FullyEncoded);
+}
+
+RevealCommand revealFileCommand(const QString &path) {
+  return {QStringLiteral("uwsm-app"),
+          {QStringLiteral("--"), QStringLiteral("nautilus"),
+           QStringLiteral("--select"), absoluteLocalFileUrl(path)}};
+}
+} // namespace
+
+bool revealFileInFolder(const QString &path) {
+  if (path.isEmpty())
+    return false;
+  const RevealCommand command = revealFileCommand(path);
+  return QProcess::startDetached(command.program, command.arguments);
 }
 
 void sendCaptureNotification(const QString &message, const QString &imagePath) {
@@ -2034,18 +2057,16 @@ void sendCaptureNotification(const QString &message, const QString &imagePath) {
                         QStringLiteral("--app-name"), QStringLiteral("omasnap"),
                         message};
   if (!imagePath.isEmpty()) {
-    const QString imageUrl =
-        QUrl::fromLocalFile(imagePath).toString(QUrl::FullyEncoded);
-    QString omasnap = QDir(QCoreApplication::applicationDirPath())
-                          .filePath(QStringLiteral("omasnap"));
-    if (!QFileInfo::exists(omasnap))
-      omasnap = QStringLiteral("omasnap");
-    arguments << QStringLiteral("Click to edit") << QStringLiteral("--image")
-              << imagePath << QStringLiteral("--exec")
-              << QStringLiteral("%1 %2").arg(shellQuote(omasnap),
-                                             shellQuote(imageUrl));
+    const QString absoluteImagePath = QFileInfo(imagePath).absoluteFilePath();
+    const RevealCommand reveal = revealFileCommand(absoluteImagePath);
+    arguments << QStringLiteral("Click to show in folder")
+              << QStringLiteral("--image") << absoluteImagePath
+              << QStringLiteral("-t") << QStringLiteral("4500")
+              << QStringLiteral("--exec") << reveal.program;
+    arguments << reveal.arguments;
+  } else {
+    arguments << QStringLiteral("-t") << QStringLiteral("4500");
   }
-  arguments << QStringLiteral("-t") << QStringLiteral("4500");
   QProcess::startDetached(QStringLiteral("omarchy-notification-send"),
                           arguments);
 }

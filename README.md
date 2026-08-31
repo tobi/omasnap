@@ -37,6 +37,8 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
   mesh-gradient backdrops, and rendered drop shadows on standard backdrop cards.
 - Cut tool: drag across a band of the image to remove it and collapse the gap, with a
   live preview and dashed seam marker while dragging; annotations shift to follow.
+  Hold **Ctrl** (or **Ctrl+X**) to insert a transparent band instead; the toolbar
+  icon swaps to a split-plus while Ctrl is down.
 - Pin a finished capture as a bottom-right always-on-top layer surface, launched
   from the same `omasnap` executable and visible on every workspace.
 - Crash-resistant working documents under `/run/user/<UID>/omasnap/` (falling back to
@@ -67,8 +69,10 @@ Runtime commands used by the application:
 - `hyprctl`
 - `wl-copy` and `wl-paste`
 - `tesseract`
-- `omarchy-notification-send` when available; saved captures include a thumbnail and
-  reopen in Omasnap when clicked. Notification failure does not invalidate output.
+- `omarchy-notification-send` when available; saved captures include a thumbnail.
+  Notification failure does not invalidate output.
+- `uwsm-app` and Nautilus for the optional reveal-after-save gesture and saved
+  notification click. A reveal failure does not invalidate output.
 
 ## Install on Omarchy
 
@@ -216,8 +220,7 @@ the overlay that is still on screen.
 
 Editing an existing image is never cancelled this way: `--file`, `--clipboard`, or an
 image path stops the running instance, waits up to two seconds for the lock, and opens the
-editor on that image. That is how a pin's Edit button and a notification click always land
-in the editor.
+editor on that image. That is how a pin's Edit button lands in the editor.
 
 A lock left behind by a crashed instance is removed and reclaimed. A lock file that cannot
 be read or written at all is reported on stderr instead of being mistaken for a running
@@ -251,8 +254,9 @@ omasnap --clipboard
 The clipboard must offer readable image data. Text-only clipboard contents return an
 error instead of opening an empty editor.
 
-File URLs are accepted too. A saved capture notification's "Click to edit" action launches
-`omasnap` on the finished screenshot, so it can be reopened and re-annotated.
+File URLs are accepted too. A saved capture notification's "Click to show in folder"
+action reveals the finished screenshot in Files. To reopen it with editable layers, use
+the Recent captures shelf.
 
 ### Recent captures
 
@@ -365,7 +369,7 @@ without reaching for the pointer.
 | `R` | Rectangle; hover the shape button for rectangle, ellipse, and fill controls; `Alt`+wheel rounds corners |
 | `E` | Ellipse; shares the shape submenu and filled/hollow toggle |
 | `D` | Redact; press again to toggle randomized pixelation or solid redaction |
-| `X` | Cut out a band; drag to preview the crossed-out strip, then release to remove and collapse it |
+| `X` | Cut out a band; drag to preview the crossed-out strip, then release to remove and collapse it. **Ctrl** (with Cut armed, or **Ctrl+X**) inserts a band instead; the cut icon becomes a split-plus |
 | `T` | Text on a cream readability pill, with Neucha as the default. Click for a one-line label, or drag a box to give it room for several lines: Enter moves to the next line while there is room and commits on the last one; `Shift+Enter` always adds a line; `Esc` commits too but keeps the label selected, so `Backspace` removes it; clicking away keeps the text; press T again to toggle the pill |
 | `Shift+T` | Cycle the next or selected text through Neucha, JetBrains Mono, and Inter Display |
 | `O` | Recognize and copy all text in the current image |
@@ -387,10 +391,15 @@ without reaching for the pointer.
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | `Ctrl+C` | Copy PNG only |
 | `Ctrl+S` | Save PNG only |
+| `Ctrl+Shift+S` | Save and reveal the selected file in Files |
 | `Enter` | Copy and save (with a text layer selected: edit it) |
+| `Shift+Enter` | Copy, save, and reveal the selected file in Files |
 | `P` | Pin the capture on screen and close the editor |
 | `Esc` | Return to Select; press again to close |
 | Right-click | Return to Select; cancel active drawing |
+
+Holding `Shift` while clicking the toolbar's Save or Copy+Save button also
+reveals the finished file in Files.
 
 ### Pinned captures
 

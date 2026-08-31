@@ -268,6 +268,9 @@ public:
   /// Apply a cut as if the user had dragged that band. Test hook: operate on
   /// a fixture raster without going through widget coordinates.
   void applyCutForTest(CutOp cut) { commitCut(std::move(cut)); }
+  /// Composed source after cuts. Test accessor: insert-band smoke checks
+  /// the transparent gap on the working image, not the flattened export.
+  [[nodiscard]] QImage composedSourceForTest() const { return capture_.source; }
   /// Number of selected layers. Test accessor.
   [[nodiscard]] int selectedCountForTest() const {
     return static_cast<int>(selectedAnnotations_.size());
@@ -542,6 +545,7 @@ private:
   void commitDelete(const QVector<int> &indices);
   void commitCrop(const QRectF &crop);
   void commitCut(CutOp cut);
+  [[nodiscard]] bool cutInsertHint() const;
   void commitBackground(BackgroundStyle style, bool imageShadow);
   void commitCanvasBoundary(CanvasBoundaryMode mode);
   void cycleCanvasBoundary(bool reverse);
@@ -549,10 +553,10 @@ private:
   void replayLog();
   void redoEdit();
   void selectWindowInDirection(int key);
-  void finish(OutputMode mode);
+  void finish(OutputMode mode, bool reveal = false);
   void completeFinish(const FinishResult &result);
   void handleEscape();
-  void handleToolbar(const QString &action);
+  void handleToolbar(const QString &action, bool reveal);
   void paintEdit(QPainter &painter);
   void paintSelect(QPainter &painter);
   void refreshBackdropCache();
