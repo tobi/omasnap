@@ -44,9 +44,10 @@ Two operations *do* need to touch real pixels before export, and both are
 still fully undoable because of how they're kept in the log:
 
 - **Cut** (`Operation::Type::Cut`) removes a band of the image and shifts
-  everything after it. The working image (`capture_.source`) after a cut is
-  `composeCuts(pristineSource_, cuts_)` — recomputed from the untouched
-  original plus the list of cut ops every time the list changes
+  everything after it, or **inserts** a transparent band (`cut.insert`) and
+  shifts everything after the seam out. The working image (`capture_.source`)
+  after a cut is `composeCuts(pristineSource_, cuts_)` — recomputed from the
+  untouched original plus the list of cut ops every time the list changes
   (`CaptureEditor::refreshComposedCapture()`). Undo a cut and the composed
   image is rebuilt without it; `pristineSource_` was never modified.
 - **Redaction** exists to permanently destroy sensitive content, so it is
