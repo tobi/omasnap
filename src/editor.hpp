@@ -3,6 +3,7 @@
 #include "background-config.hpp"
 #include "capture.hpp"
 #include "cut.hpp"
+#include "keybind-config.hpp"
 #include "overlay-chrome.hpp"
 #include "palette-config.hpp"
 #include "recent-snaps.hpp"
@@ -380,6 +381,14 @@ private:
   [[nodiscard]] QString highlighterStatus() const;
   [[nodiscard]] QString highlighterTooltip() const;
   void activateHighlighter();
+  /// Whether the event matches one of `action`'s configured bindings
+  /// (exact key plus modifiers; keypad bits never distinguish).
+  [[nodiscard]] bool keyMatches(const QKeyEvent *event, KeyAction action) const;
+  /// Display form of an action's primary binding ("Alt+D"), for status lines
+  /// and tooltips: hints must follow rebinds instead of lying about keys.
+  [[nodiscard]] QString keyHint(KeyAction action) const;
+  /// Which configured color slot (0-based) the event hits, or -1.
+  [[nodiscard]] int matchedColorSlot(const QKeyEvent *event) const;
   [[nodiscard]] int annotationAt(const QPointF &point) const;
   /// Whether the armed tool picks a layer up rather than working over it.
   /// Moves a layer to the top of the stack, remapping every index that
@@ -697,6 +706,7 @@ private:
   int hoveredWindow_ = -1;
   int colorIndex_ = 0;
   PaletteConfig paletteConfig_ = defaultPaletteConfig();
+  KeybindConfig keybinds_;
   QColor customColor_;
   qreal customHue_ = 0.98;
   int nextMarker_ = 1;

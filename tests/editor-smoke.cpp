@@ -10,6 +10,7 @@
 #include "overlay-chrome.hpp"
 #include "recent-snaps.hpp"
 #include "instance-lock-smoke.hpp"
+#include "keybind-config-smoke.hpp"
 #include "palette-config-smoke.hpp"
 #include "pin-layout-smoke.hpp"
 #include "stitch-smoke.hpp"
@@ -7477,6 +7478,14 @@ int main(int argc, char **argv) {
   if (!heldLockPath.isEmpty())
     return runInstanceLockHolder(heldLockPath);
 
+  // Keep the editor's keybind/palette/background config hermetic: read defaults
+  // from a scratch config dir instead of the developer's own ~/.config, so a
+  // personal [keys] override cannot flip the bindings the suite asserts on.
+  QTemporaryDir smokeConfig;
+  if (!smokeConfig.isValid())
+    return 19;
+  qputenv("XDG_CONFIG_HOME", smokeConfig.path().toUtf8());
+
   QApplication application(argc, argv);
   QApplication::setFont(chromeDefaultFont()); // as main() does
   if (!loadCaptureFonts())
@@ -8988,6 +8997,12 @@ int main(int argc, char **argv) {
   QString paletteError;
   if (!runPaletteConfigSmoke(paletteError)) {
     qWarning().noquote() << "palette config smoke failed:" << paletteError;
+    return EXIT_FAILURE;
+  }
+
+  QString keybindError;
+  if (!runKeybindConfigSmoke(keybindError)) {
+    qWarning().noquote() << "keybind config smoke failed:" << keybindError;
     return EXIT_FAILURE;
   }
 

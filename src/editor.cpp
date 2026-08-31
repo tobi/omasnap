@@ -5,6 +5,7 @@
 #include "stitch.hpp"
 #include "icons.hpp"
 #include "eyedropper.hpp"
+#include "keybind-config.hpp"
 #include "output-config.hpp"
 #include "overlay-chrome.hpp"
 #include "palette-config.hpp"
@@ -223,7 +224,7 @@ qreal toolbarScale(qreal availableWidth) {
 /// at 3× than at 1×), and the two you are not touching should not have to be
 /// remembered or re-discovered by pressing keys to find out.
 QString spotlightStatus(SpotlightShape shape, qreal magnification,
-                        qreal border) {
+                        qreal border, const QString &cycleKey) {
   const QString shapeName = shape == SpotlightShape::Ellipse
                                 ? QStringLiteral("ellipse")
                             : shape == SpotlightShape::Rectangle
@@ -236,16 +237,17 @@ QString spotlightStatus(SpotlightShape shape, qreal magnification,
   const QString ring = border <= 0.0
                            ? QStringLiteral("no border")
                            : QStringLiteral("border %1").arg(qRound(border));
-  return QStringLiteral("Spotlight · %1 · %2 · %3 · S cycles shape · wheel "
+  return QStringLiteral("Spotlight · %1 · %2 · %3 · %4 cycles shape · wheel "
                         "zooms · Alt+wheel border")
-      .arg(shapeName, zoom, ring);
+      .arg(shapeName, zoom, ring, cycleKey);
 }
 
 } // namespace
 
 QString spotlightStatusForTest(SpotlightShape shape, qreal magnification,
                                qreal border) {
-  return spotlightStatus(shape, magnification, border);
+  // The default cycle key reads fine for tests that do not load a config.
+  return spotlightStatus(shape, magnification, border, QStringLiteral("S"));
 }
 
 namespace {
@@ -647,6 +649,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
       return image;
     }));
   }
+  keybinds_ = loadKeybindConfig(defaultConfigPath());
   if (!log.ops.isEmpty()) {
     ops_ = std::move(log.ops);
     opIndex_ = std::clamp(log.index, 0, static_cast<int>(ops_.size()));
@@ -1235,12 +1238,14 @@ QString CaptureEditor::highlighterStatus() const {
 QString CaptureEditor::highlighterTooltip() const {
   if (highlighterMode_ == HighlighterMode::Snap) {
     return QStringLiteral("Highlighter · Snap · text height automatic · wheel "
-                          "sets off-text size %1 · H / click again: Normal")
-        .arg(qRound(annotationSize_));
+                          "sets off-text size %1 · %2 / click again: Normal")
+        .arg(qRound(annotationSize_))
+        .arg(keyHint(KeyAction::Highlighter));
   }
   return QStringLiteral("Highlighter · Normal · freehand · size %1 · wheel / "
-                        "Alt+wheel · H / click again: Snap")
-      .arg(qRound(annotationSize_));
+                        "Alt+wheel · %2 / click again: Snap")
+      .arg(qRound(annotationSize_))
+      .arg(keyHint(KeyAction::Highlighter));
 }
 
 void CaptureEditor::activateHighlighter() {
@@ -1276,13 +1281,14 @@ QString CaptureEditor::toolStatus() const {
         spotlightBorder_ <= 0.0
             ? QStringLiteral("no border")
             : QStringLiteral("border %1").arg(qRound(spotlightBorder_));
-    return QStringLiteral("Spotlight · %1 · %2 · %3 · S cycles shape · wheel "
+    return QStringLiteral("Spotlight · %1 · %2 · %3 · %4 cycles shape · wheel "
                           "zooms · Alt+wheel border")
-        .arg(shape, zoom, ring);
+        .arg(shape, zoom, ring, keyHint(KeyAction::Spotlight));
   }
   case Tool::Redact:
-    return QStringLiteral("Redact · %1 · D toggles style")
-        .arg(redactionStyleName(redactionStyle_).toLower());
+    return QStringLiteral("Redact · %1 · %2 toggles style")
+        .arg(redactionStyleName(redactionStyle_).toLower(),
+             keyHint(KeyAction::Redact));
   case Tool::Text:
     return QStringLiteral("Text · %1 · size %2 · Shift+T cycles font · click "
                           "to type")
@@ -1503,7 +1509,8 @@ void CaptureEditor::duplicateSelectedAnnotation() {
     selectedAnnotation_ = annotations_.size() - 1;
     selectedAnnotations_ = {selectedAnnotation_};
   }
-  setStatus(QStringLiteral("Duplicated · Alt+D again offsets further"));
+  setStatus(QStringLiteral("Duplicated · %1 again offsets further")
+                .arg(keyHint(KeyAction::DuplicateLayer)));
 }
 
 bool CaptureEditor::adjustSelectedAnnotationRing(int step) {
@@ -1529,7 +1536,8 @@ bool CaptureEditor::adjustSelectedAnnotationRing(int step) {
     return false;
   annotation.size = std::clamp(annotation.size + step * 2.0, 0.0, 12.0);
   setStatus(spotlightStatus(annotation.spotlightShape,
-                            annotation.magnification, annotation.size));
+                            annotation.magnification, annotation.size,
+                            keyHint(KeyAction::Spotlight)));
   commitPatch({selectedAnnotation_});
   return true;
 }
@@ -1556,7 +1564,8 @@ void CaptureEditor::adjustSelectedAnnotation(int step) {
     annotation.magnification =
         std::clamp(annotation.magnification + step * 0.25, 1.0, 4.0);
     setStatus(spotlightStatus(annotation.spotlightShape,
-                              annotation.magnification, annotation.size));
+                              annotation.magnification, annotation.size,
+                              keyHint(KeyAction::Spotlight)));
     commitPatch({selectedAnnotation_});
     return;
   case Annotation::Kind::Marker:
@@ -1615,10 +1624,11 @@ void CaptureEditor::adjustSelectedAnnotation(int step) {
     annotation.start = center + (annotation.start - center) * scale;
     annotation.end = center + (annotation.end - center) * scale;
     const QRectF grown = annotationBounds(annotation);
-    setStatus(QStringLiteral("Filled shape · %1 × %2 · R unfills it to set "
-                             "a thickness")
+    setStatus(QStringLiteral("Filled shape · %1 × %2 · %3 unfills it to "
+                             "set a thickness")
                   .arg(qRound(grown.width()))
-                  .arg(qRound(grown.height())));
+                  .arg(qRound(grown.height()))
+                  .arg(keyHint(KeyAction::Rectangle)));
     commitPatch({selectedAnnotation_});
     return;
   }
@@ -1644,8 +1654,8 @@ void CaptureEditor::toggleShapeFill() {
   selectedAnnotation_ = -1;
   setStatus(QStringLiteral("%1 shapes · %2 again toggles fill")
                 .arg(fillName(fillShapes_))
-                .arg(tool_ == Tool::Ellipse ? QStringLiteral("E")
-                                            : QStringLiteral("R")));
+                .arg(tool_ == Tool::Ellipse ? keyHint(KeyAction::Ellipse)
+                                            : keyHint(KeyAction::Rectangle)));
 }
 
 void CaptureEditor::toggleTextBackground() {
@@ -1653,15 +1663,17 @@ void CaptureEditor::toggleTextBackground() {
       annotations_.at(selectedAnnotation_).kind == Annotation::Kind::Text) {
     Annotation &text = annotations_[selectedAnnotation_];
     text.textBackground = nextTextBackground(text.textBackground);
-    setStatus(QStringLiteral("Selected text: %1 · T again cycles")
-                  .arg(textBackgroundName(text.textBackground).toLower()));
+    setStatus(QStringLiteral("Selected text: %1 · %2 again cycles")
+                  .arg(textBackgroundName(text.textBackground).toLower())
+                  .arg(keyHint(KeyAction::Text)));
     commitPatch({selectedAnnotation_});
     return;
   }
   textBackground_ = nextTextBackground(textBackground_);
   selectedAnnotation_ = -1;
-  setStatus(QStringLiteral("Text: %1 · T again cycles")
-                .arg(textBackgroundName(textBackground_).toLower()));
+  setStatus(QStringLiteral("Text: %1 · %2 again cycles")
+                .arg(textBackgroundName(textBackground_).toLower())
+                .arg(keyHint(KeyAction::Text)));
 }
 
 void CaptureEditor::cycleTextFont() {
@@ -2232,28 +2244,35 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
 
   // Tools: everything that acts on the image via the cursor.
   add(36, QStringLiteral("tool-select"), {},
-      QStringLiteral("Select/move · V · Ctrl+wheel zoom · outer handles crop"));
+      QStringLiteral("Select/move · %1 · Ctrl+wheel zoom · outer handles crop")
+          .arg(keyHint(KeyAction::Select)));
   add(36, QStringLiteral("tool-arrow"), {},
-      QStringLiteral("Arrow · A · Shift snaps 45° · Size %1 · Wheel")
+      QStringLiteral("Arrow · %1 · Shift snaps 45° · Size %2 · Wheel")
+          .arg(keyHint(KeyAction::Arrow))
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-line"), {},
-      QStringLiteral("Line · L · Shift snaps 45° · Size %1 · Wheel")
+      QStringLiteral("Line · %1 · Shift snaps 45° · Size %2 · Wheel")
+          .arg(keyHint(KeyAction::Line))
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-freehand"), {},
-      QStringLiteral("Freehand · F · Size %1 · Wheel")
+      QStringLiteral("Freehand · %1 · Size %2 · Wheel")
+          .arg(keyHint(KeyAction::Freehand))
           .arg(qRound(annotationSize_)));
   add(36, QStringLiteral("tool-highlighter"), {}, highlighterTooltip());
   add(36, QStringLiteral("tool-marker"), {},
-      QStringLiteral("Number marker · C · Size %1 · Wheel")
+      QStringLiteral("Number marker · %1 · Size %2 · Wheel")
+          .arg(keyHint(KeyAction::Marker))
           .arg(qRound(annotationSize_)));
   const QString fillHint = fillShapes_ ? QStringLiteral("filled") : QString();
   const bool ellipseSelected = tool_ == Tool::Ellipse;
   add(36, ellipseSelected ? QStringLiteral("tool-ellipse")
                           : QStringLiteral("tool-rectangle"),
       fillHint,
-      QStringLiteral("Shapes · R rectangle · E ellipse · hover for fill"));
+      QStringLiteral("Shapes · %1 rectangle · %2 ellipse · hover for fill")
+          .arg(keyHint(KeyAction::Rectangle), keyHint(KeyAction::Ellipse)));
   add(36, QStringLiteral("tool-spotlight"), {},
-      QStringLiteral("Spotlight · S · %1 · %2× · S cycles shape")
+      QStringLiteral("Spotlight · %1 · %2 · %3× · %1 cycles shape")
+          .arg(keyHint(KeyAction::Spotlight))
           .arg(spotlightShape_ == SpotlightShape::Ellipse
                    ? QStringLiteral("ellipse")
                    : spotlightShape_ == SpotlightShape::Rectangle
@@ -2261,37 +2280,46 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
                          : QStringLiteral("rounded"))
           .arg(spotlightMagnification_, 0, 'f', 1));
   add(36, QStringLiteral("tool-redact"), {},
-      QStringLiteral("Redact · D · %1 · D again toggles")
+      QStringLiteral("Redact · %1 · %2 · %1 again toggles")
+          .arg(keyHint(KeyAction::Redact))
           .arg(redactionStyleName(redactionStyle_)));
   add(36, QStringLiteral("tool-cut"), {},
-      QStringLiteral("Cut out a band · X · drag across"));
+      QStringLiteral("Cut out a band · %1 · drag across")
+          .arg(keyHint(KeyAction::Cut)));
   add(36, QStringLiteral("tool-text"), {},
-      QStringLiteral("%1 text · T · %2 · %3 · T again cycles style · "
+      QStringLiteral("%1 text · %2 · %3 · %4 · %2 again cycles style · "
                      "Shift+T cycles font · Wheel")
-          .arg(annotationTextFontName(textFont_))
+          .arg(annotationTextFontName(textFont_),
+               keyHint(KeyAction::Text))
           .arg(QString::fromLatin1(
               kTextSizeNames.at(static_cast<std::size_t>(textSizeIndex_))))
           .arg(textBackgroundName(textBackground_)));
   add(36, QStringLiteral("tool-ocr"), {},
-      QStringLiteral("Copy all text in the image · O"));
+      QStringLiteral("Copy all text in the image · %1")
+          .arg(keyHint(KeyAction::Ocr)));
   endGroup();
 
   // Actions: pin and finish/exit the capture.
   add(36, QStringLiteral("pin"), {},
-      QStringLiteral("Pin on screen · P · Ctrl+C on the pin copies it"));
-  add(36, QStringLiteral("copy"), {}, QStringLiteral("Copy only · Ctrl+C"));
+      QStringLiteral("Pin on screen · %1 · Ctrl+C on the pin copies it")
+          .arg(keyHint(KeyAction::Pin)));
+  add(36, QStringLiteral("copy"), {},
+      QStringLiteral("Copy only · %1").arg(keyHint(KeyAction::Copy)));
   add(40, QStringLiteral("both"), {}, QStringLiteral("Copy and save · Enter"));
-  add(36, QStringLiteral("save"), {}, QStringLiteral("Save only · Ctrl+S"));
+  add(36, QStringLiteral("save"), {},
+      QStringLiteral("Save only · %1").arg(keyHint(KeyAction::Save)));
   add(36, QStringLiteral("close"), {}, QStringLiteral("Close · Esc twice"));
 
   if (includeSubmenus && shapeMenuOpen_) {
     const QRectF menu = shapeMenuRect();
     buttons.push_back({{menu.left() + 4, menu.top() + 4, 32, 28},
                        QStringLiteral("shape-rectangle"), {},
-                       QStringLiteral("Rectangle · R"), {}});
+                       QStringLiteral("Rectangle · %1")
+                           .arg(keyHint(KeyAction::Rectangle)), {}});
     buttons.push_back({{menu.left() + 40, menu.top() + 4, 32, 28},
                        QStringLiteral("shape-ellipse"), {},
-                       QStringLiteral("Ellipse · E"), {}});
+                       QStringLiteral("Ellipse · %1")
+                           .arg(keyHint(KeyAction::Ellipse)), {}});
     buttons.push_back({{menu.left() + 76, menu.top() + 4, 32, 28},
                        QStringLiteral("shape-fill"),
                        fillShapes_ ? QStringLiteral("filled") : QString(),
@@ -2315,7 +2343,8 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
     buttons.push_back({{palette.left() + 4 + (presetCount + 1) * 28,
                         palette.top() + 4, 24, 28},
                        QStringLiteral("tool-eyedropper"), {},
-                       QStringLiteral("Sample from image · I"), {}});
+                       QStringLiteral("Sample from image · %1")
+                           .arg(keyHint(KeyAction::Eyedropper)), {}});
   }
   return buttons;
 }
@@ -2596,13 +2625,15 @@ void CaptureEditor::cycleBackground() {
     break;
   }
   if (next == BackgroundStyle::Off) {
-    setStatus(QStringLiteral("Backdrop: Off · B cycles"));
+    setStatus(QStringLiteral("Backdrop: Off · %1 cycles")
+                  .arg(keyHint(KeyAction::Backdrop)));
   } else {
-    setStatus(QStringLiteral("Backdrop: %1 · shadow %2 · B cycles · Shift+B "
+    setStatus(QStringLiteral("Backdrop: %1 · shadow %2 · %3 cycles · Shift+B "
                              "toggles shadow")
                   .arg(backgroundName(next),
                        nextShadow ? QStringLiteral("on")
-                                  : QStringLiteral("off")));
+                                  : QStringLiteral("off"),
+                       keyHint(KeyAction::Backdrop)));
   }
   commitBackground(next, nextShadow);
 }
@@ -3554,8 +3585,9 @@ void CaptureEditor::handleToolbar(const QString &action) {
       tool_ = Tool::Redact;
     }
     selectedAnnotation_ = -1;
-    setStatus(QStringLiteral("Redact: %1 · drag sensitive content · D toggles")
-                  .arg(redactionStyleName(redactionStyle_)));
+    setStatus(QStringLiteral("Redact: %1 · drag sensitive content · %2 toggles")
+                  .arg(redactionStyleName(redactionStyle_))
+                  .arg(keyHint(KeyAction::Redact)));
   } else if (action == QStringLiteral("tool-cut")) {
     tool_ = Tool::Cut;
     selectedAnnotation_ = -1;
@@ -3615,6 +3647,36 @@ void CaptureEditor::handleToolbar(const QString &action) {
   update();
 }
 
+bool CaptureEditor::keyMatches(const QKeyEvent *event, KeyAction action) const {
+  const auto found = keybinds_.bindings.find(action);
+  if (found == keybinds_.bindings.end())
+    return false;
+  // Keypad and group-switch bits never distinguish a binding: Ctrl+C is
+  // Ctrl+C wherever the C lives.
+  const int modifiers =
+      static_cast<int>(event->modifiers()) &
+      ~(static_cast<int>(Qt::KeypadModifier) |
+        static_cast<int>(Qt::GroupSwitchModifier));
+  const QKeySequence pressed(event->key() | modifiers);
+  return std::ranges::any_of(found->second,
+                             [&](const QKeySequence &binding) {
+                               return binding == pressed;
+                             });
+}
+
+QString CaptureEditor::keyHint(KeyAction action) const {
+  return primaryKeyHint(keybinds_, action);
+}
+
+int CaptureEditor::matchedColorSlot(const QKeyEvent *event) const {
+  for (int slot = 0; slot < 8; ++slot)
+    if (keyMatches(
+            event, static_cast<KeyAction>(static_cast<int>(KeyAction::Color1) +
+                                          slot)))
+      return slot;
+  return -1;
+}
+
 void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   modifiersSeen_ = true;
   if (!ocrResultText_.isEmpty()) {
@@ -3666,7 +3728,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     return;
   }
   if (phase_ == Phase::Select) {
-    if (event->matches(QKeySequence::SelectAll)) {
+    if (keyMatches(event, KeyAction::SelectAll)) {
       selectFullscreen();
       return;
     }
@@ -3685,8 +3747,8 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       chooseWindow(hoveredWindow_);
       return;
     }
-    if (!windowMode_ && !dragging_ && event->key() == Qt::Key_R &&
-        !event->modifiers()) {
+    if (!windowMode_ && !dragging_ &&
+        keyMatches(event, KeyAction::RestoreLastRegion)) {
       // R brings back the last region drawn this session, written for this
       // monitor at this size; anything else in the file is simply ignored.
       const QString path = storedCaptureRegionPath();
@@ -3707,11 +3769,11 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       }
       return;
     }
-    if (event->key() == Qt::Key_S && !event->modifiers()) {
+    if (keyMatches(event, KeyAction::ToggleScrollMode)) {
       setScrollMode(!scrollMode_);
       return;
     }
-    if (event->key() == Qt::Key_Space) {
+    if (keyMatches(event, KeyAction::CycleSelectTab)) {
       // Space steps along the tab strip. Fullscreen is skipped: it captures
       // on the spot, and a cycle key that fires it on the way past would be
       // a trap rather than a mode.
@@ -3747,46 +3809,41 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     setStatus(QStringLiteral("Cut cancelled"));
   }
 
-  const bool redoShortcut = event->matches(QKeySequence::Redo) ||
-                            (event->key() == Qt::Key_Y &&
-                             event->modifiers().testFlag(Qt::ControlModifier));
   // Zoom keys. The bare keys work in the edit phase too, so zoom never
   // depends on a modifier reaching us: a remote keyboard bridge may inject
   // the modifier in a way the compositor never publishes as xkb state.
-  const bool zoomModifier =
-      event->modifiers().testFlag(Qt::ControlModifier) || phase_ == Phase::Edit;
-  if (event->matches(QKeySequence::ZoomIn) ||
-      (zoomModifier &&
-       (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal))) {
+  if (keyMatches(event, KeyAction::ZoomIn)) {
     setViewZoom(viewZoom_ * 1.25, editImageRect().center());
-    setStatus(QStringLiteral("Zoom %1% · + / - zoom · 0 fits · wheel scrolls")
+    setStatus(QStringLiteral("Zoom %1% · %2 / %3 zoom · %4 fits · wheel scrolls")
                   .arg(qRound(viewZoom_ *
                               (baseImageRect().width() /
                                std::max<qreal>(canvasRect_.width(), 1)) *
-                              100)));
+                              100))
+                  .arg(keyHint(KeyAction::ZoomIn), keyHint(KeyAction::ZoomOut),
+                       keyHint(KeyAction::ZoomFit)));
     return;
-  } else if (event->matches(QKeySequence::ZoomOut) ||
-             (zoomModifier && (event->key() == Qt::Key_Minus ||
-                               event->key() == Qt::Key_Underscore))) {
+  } else if (keyMatches(event, KeyAction::ZoomOut)) {
     setViewZoom(viewZoom_ / 1.25, editImageRect().center());
-    setStatus(QStringLiteral("Zoom %1% · + / - zoom · 0 fits · wheel scrolls")
+    setStatus(QStringLiteral("Zoom %1% · %2 / %3 zoom · %4 fits · wheel scrolls")
                   .arg(qRound(viewZoom_ *
                               (baseImageRect().width() /
                                std::max<qreal>(canvasRect_.width(), 1)) *
-                              100)));
+                              100))
+                  .arg(keyHint(KeyAction::ZoomIn), keyHint(KeyAction::ZoomOut),
+                       keyHint(KeyAction::ZoomFit)));
     return;
-  } else if (zoomModifier && event->key() == Qt::Key_0) {
+  } else if (keyMatches(event, KeyAction::ZoomFit)) {
     resetView();
     return;
   }
-  if (redoShortcut) {
+  if (keyMatches(event, KeyAction::Redo)) {
     redoEdit();
-  } else if (event->matches(QKeySequence::Undo)) {
+  } else if (keyMatches(event, KeyAction::Undo)) {
     undoEdit();
-  } else if (event->matches(QKeySequence::Copy)) {
+  } else if (keyMatches(event, KeyAction::Copy)) {
     finish(OutputMode::Copy);
     return;
-  } else if (event->matches(QKeySequence::Save)) {
+  } else if (keyMatches(event, KeyAction::Save)) {
     finish(OutputMode::Save);
     return;
   } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
@@ -3803,8 +3860,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     }
     finish(OutputMode::Both);
     return;
-  } else if (event->key() == Qt::Key_D &&
-             event->modifiers() == Qt::AltModifier) {
+  } else if (keyMatches(event, KeyAction::DuplicateLayer)) {
     duplicateSelectedAnnotation();
   } else if (const QPointF nudge = arrowKeyDelta(
                  event->key(), heldModifiers(event->modifiers())
@@ -3838,29 +3894,31 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
                                         : QPointF(0, -step);
     panView(delta);
     setStatus(QStringLiteral("Panning · arrows move, Shift jumps · middle-drag "
-                             "pans · Ctrl+0 fits"));
+                             "pans · %1 fits")
+                  .arg(keyHint(KeyAction::ZoomFit)));
   } else if ((event->key() == Qt::Key_Delete ||
               event->key() == Qt::Key_Backspace) &&
              !selectedAnnotations_.isEmpty()) {
     commitDelete(selectedAnnotations_);
     selectedAnnotations_.clear();
     selectedAnnotation_ = -1;
-  } else if (event->key() == Qt::Key_V) {
+  } else if (keyMatches(event, KeyAction::Select)) {
     tool_ = Tool::Select;
-  } else if (event->matches(QKeySequence::SelectAll)) {
+  } else if (keyMatches(event, KeyAction::SelectAll)) {
     selectAllAnnotations();
-  } else if (event->key() == Qt::Key_A) {
+  } else if (keyMatches(event, KeyAction::Arrow)) {
     tool_ = Tool::Arrow;
-  } else if (event->key() == Qt::Key_L) {
+  } else if (keyMatches(event, KeyAction::Line)) {
     tool_ = Tool::Line;
-  } else if (event->key() == Qt::Key_F) {
+  } else if (keyMatches(event, KeyAction::Freehand)) {
     tool_ = Tool::Freehand;
-  } else if (event->key() == Qt::Key_H) {
+  } else if (keyMatches(event, KeyAction::Highlighter)) {
     activateHighlighter();
-  } else if (event->key() == Qt::Key_C || event->key() == Qt::Key_M) {
+  } else if (keyMatches(event, KeyAction::Marker)) {
     tool_ = Tool::Marker;
-  } else if (event->key() == Qt::Key_R || event->key() == Qt::Key_E) {
-    const bool rectangle = event->key() == Qt::Key_R;
+  } else if (keyMatches(event, KeyAction::Rectangle) ||
+             keyMatches(event, KeyAction::Ellipse)) {
+    const bool rectangle = keyMatches(event, KeyAction::Rectangle);
     const Tool shape = rectangle ? Tool::Rectangle : Tool::Ellipse;
     if (!dragging_ && selectedAnnotation_ >= 0 &&
         selectedAnnotation_ < annotations_.size() &&
@@ -3872,14 +3930,15 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
               .arg(rectangle ? QStringLiteral("rectangle")
                              : QStringLiteral("ellipse"))
               .arg(fillName(selected.filled).toLower())
-              .arg(rectangle ? QStringLiteral("R") : QStringLiteral("E")));
+              .arg(rectangle ? keyHint(KeyAction::Rectangle)
+                             : keyHint(KeyAction::Ellipse)));
       commitPatch({selectedAnnotation_});
     } else if (tool_ == shape) {
       toggleShapeFill();
     } else {
       tool_ = shape;
     }
-  } else if (event->key() == Qt::Key_S) {
+  } else if (keyMatches(event, KeyAction::Spotlight)) {
     if (tool_ == Tool::Spotlight) {
       spotlightShape_ = spotlightShape_ == SpotlightShape::Ellipse
                             ? SpotlightShape::Rectangle
@@ -3891,7 +3950,7 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       tool_ = Tool::Spotlight;
     }
     selectedAnnotation_ = -1;
-  } else if (event->key() == Qt::Key_D) {
+  } else if (keyMatches(event, KeyAction::Redact)) {
     if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
         annotations_.at(selectedAnnotation_).kind ==
             Annotation::Kind::Redaction) {
@@ -3900,8 +3959,10 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
           redaction.redactionStyle == RedactionStyle::Solid
               ? RedactionStyle::Pixelate
               : RedactionStyle::Solid;
-      setStatus(QStringLiteral("Selected redaction: %1 · D toggles")
-                    .arg(redactionStyleName(redaction.redactionStyle)));
+      setStatus(
+          QStringLiteral("Selected redaction: %1 · %2 toggles")
+              .arg(redactionStyleName(redaction.redactionStyle))
+              .arg(keyHint(KeyAction::Redact)));
       commitPatch({selectedAnnotation_});
     } else {
       if (tool_ == Tool::Redact) {
@@ -3912,17 +3973,17 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
         tool_ = Tool::Redact;
       }
       selectedAnnotation_ = -1;
-      setStatus(
-          QStringLiteral("Redact: %1 · drag sensitive content · D toggles")
-              .arg(redactionStyleName(redactionStyle_)));
+      setStatus(QStringLiteral("Redact: %1 · drag sensitive content · %2 toggles")
+                    .arg(redactionStyleName(redactionStyle_))
+                    .arg(keyHint(KeyAction::Redact)));
     }
-  } else if (event->key() == Qt::Key_X) {
+  } else if (keyMatches(event, KeyAction::Cut)) {
     tool_ = Tool::Cut;
     setStatus(QStringLiteral("Cut: drag across a band to remove it"));
   } else if (event->key() == Qt::Key_T &&
              event->modifiers() == Qt::ShiftModifier) {
     cycleTextFont();
-  } else if (event->key() == Qt::Key_T) {
+  } else if (keyMatches(event, KeyAction::Text)) {
     const bool textSelected =
         selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
         annotations_.at(selectedAnnotation_).kind == Annotation::Kind::Text;
@@ -3930,29 +3991,29 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       toggleTextBackground();
     else
       tool_ = Tool::Text;
-  } else if (event->key() == Qt::Key_I) {
+  } else if (keyMatches(event, KeyAction::Eyedropper)) {
     if (tool_ != Tool::Eyedropper)
       toolBeforeEyedropper_ = tool_;
     tool_ = Tool::Eyedropper;
-  } else if (event->key() == Qt::Key_O) {
+  } else if (keyMatches(event, KeyAction::Ocr)) {
     runOcr();
     return;
-  } else if (event->key() == Qt::Key_P) {
+  } else if (keyMatches(event, KeyAction::Pin)) {
     pinSnapshot();
     return;
   } else if (event->key() == Qt::Key_G) {
     cycleCanvasBoundary(
         event->modifiers().testFlag(Qt::ShiftModifier));
-  } else if (event->key() == Qt::Key_B) {
-    if (event->modifiers().testFlag(Qt::ShiftModifier)) {
-      const bool next = !imageShadow_;
-      setStatus(QStringLiteral("Drop shadow: %1 · Shift+B toggles")
-                    .arg(next ? QStringLiteral("on") : QStringLiteral("off")));
-      commitBackground(backgroundStyle_, next);
-    } else
-      cycleBackground();
-  } else if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_8) {
-    colorIndex_ = event->key() - Qt::Key_1;
+  } else if (event->key() == Qt::Key_B &&
+             event->modifiers().testFlag(Qt::ShiftModifier)) {
+    const bool next = !imageShadow_;
+    setStatus(QStringLiteral("Drop shadow: %1 · Shift+B toggles")
+                  .arg(next ? QStringLiteral("on") : QStringLiteral("off")));
+    commitBackground(backgroundStyle_, next);
+  } else if (keyMatches(event, KeyAction::Backdrop)) {
+    cycleBackground();
+  } else if (const int colorSlot = matchedColorSlot(event); colorSlot >= 0) {
+    colorIndex_ = colorSlot;
     usingCustomColor_ = false;
     if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
         annotations_.at(selectedAnnotation_).kind !=
@@ -5250,9 +5311,11 @@ void CaptureEditor::wheelEvent(QWheelEvent *event) {
     setStatus(hoveredRing >= 0
                   ? spotlightStatus(annotations_.at(hoveredRing).spotlightShape,
                                     annotations_.at(hoveredRing).magnification,
-                                    nextBorder)
+                                    nextBorder,
+                                    keyHint(KeyAction::Spotlight))
                   : spotlightStatus(spotlightShape_, spotlightMagnification_,
-                                    nextBorder));
+                                    nextBorder,
+                                    keyHint(KeyAction::Spotlight)));
   } else if (tool_ == Tool::Spotlight) {
     const qreal delta = step > 0 ? 0.25 : -0.25;
     const int hovered = hoveredSpotlightAt(event->position());
@@ -5262,13 +5325,15 @@ void CaptureEditor::wheelEvent(QWheelEvent *event) {
           std::clamp(annotation.magnification + delta, 1.0, 4.0);
       spotlightMagnification_ = annotation.magnification;
       setStatus(spotlightStatus(annotation.spotlightShape,
-                                annotation.magnification, annotation.size));
+                                annotation.magnification, annotation.size,
+                                keyHint(KeyAction::Spotlight)));
       commitPatch({hovered});
     } else {
       spotlightMagnification_ =
           std::clamp(spotlightMagnification_ + delta, 1.0, 4.0);
       setStatus(spotlightStatus(spotlightShape_, spotlightMagnification_,
-                                spotlightBorder_));
+                                spotlightBorder_,
+                                keyHint(KeyAction::Spotlight)));
     }
   } else if (tool_ == Tool::Rectangle &&
              event->modifiers().testFlag(Qt::AltModifier)) {
@@ -6038,10 +6103,14 @@ void CaptureEditor::paintSelect(QPainter &painter) {
   if (!exporting)
     drawHotkeyLegend(painter, rect(),
                      {{QStringLiteral("Drag"), QStringLiteral("Area")},
-                      {QStringLiteral("Space"), QStringLiteral("Window")},
-                      {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
-                      {QStringLiteral("R"), QStringLiteral("Last region")},
-                      {QStringLiteral("S"), QStringLiteral("Scrolling region")},
+                      {keyHint(KeyAction::CycleSelectTab),
+                       QStringLiteral("Window")},
+                      {keyHint(KeyAction::SelectAll),
+                       QStringLiteral("Fullscreen")},
+                      {keyHint(KeyAction::RestoreLastRegion),
+                       QStringLiteral("Last region")},
+                      {keyHint(KeyAction::ToggleScrollMode),
+                       QStringLiteral("Scrolling region")},
                       {QStringLiteral("Esc"), QStringLiteral("Close")}});
 
   const bool haveHole =
@@ -6115,24 +6184,33 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   // image, the toolbar, a popup) simply covers it wherever they overlap.
   drawHotkeyLegend(
       painter, rect(),
-      {{QStringLiteral("V"), QStringLiteral("Select / move layer")},
-       {QStringLiteral("A"), QStringLiteral("Arrow")},
-       {QStringLiteral("L"), QStringLiteral("Line")},
-       {QStringLiteral("F / H"), QStringLiteral("Freehand / Highlighter")},
-       {QStringLiteral("C"), QStringLiteral("Marker")},
-       {QStringLiteral("R / E"), QStringLiteral("Rectangle / Ellipse")},
-       {QStringLiteral("X"), QStringLiteral("Cut out a band")},
-       {QStringLiteral("T"), QStringLiteral("Text")},
+      {{keyHint(KeyAction::Select), QStringLiteral("Select / move layer")},
+       {keyHint(KeyAction::Arrow), QStringLiteral("Arrow")},
+       {keyHint(KeyAction::Line), QStringLiteral("Line")},
+       {QStringLiteral("%1 / %2")
+            .arg(keyHint(KeyAction::Freehand),
+                 keyHint(KeyAction::Highlighter)),
+        QStringLiteral("Freehand / Highlighter")},
+       {keyHint(KeyAction::Marker), QStringLiteral("Marker")},
+       {QStringLiteral("%1 / %2")
+            .arg(keyHint(KeyAction::Rectangle), keyHint(KeyAction::Ellipse)),
+        QStringLiteral("Rectangle / Ellipse")},
+       {keyHint(KeyAction::Cut), QStringLiteral("Cut out a band")},
+       {keyHint(KeyAction::Text), QStringLiteral("Text")},
        {QStringLiteral("Double click"), QStringLiteral("Edit text layer")},
        {QStringLiteral("1–8"), QStringLiteral("Color")},
        {QStringLiteral("Wheel"), QStringLiteral("Zoom selected / tool size")},
-       {QStringLiteral("D / O"), QStringLiteral("Redact / OCR text")},
-       {QStringLiteral("B / P"), QStringLiteral("Backdrop / Pin on screen")},
-       {QStringLiteral("Ctrl+Z"), QStringLiteral("Undo")},
-       {QStringLiteral("Ctrl+Shift+Z"), QStringLiteral("Redo")},
+       {QStringLiteral("%1 / %2")
+            .arg(keyHint(KeyAction::Redact), keyHint(KeyAction::Ocr)),
+        QStringLiteral("Redact / OCR text")},
+       {QStringLiteral("%1 / %2")
+            .arg(keyHint(KeyAction::Backdrop), keyHint(KeyAction::Pin)),
+        QStringLiteral("Backdrop / Pin on screen")},
+       {keyHint(KeyAction::Undo), QStringLiteral("Undo")},
+       {keyHint(KeyAction::Redo), QStringLiteral("Redo")},
        {QStringLiteral("Enter"), QStringLiteral("Copy + save")},
-       {QStringLiteral("Ctrl+C"), QStringLiteral("Copy only")},
-       {QStringLiteral("Ctrl+S"), QStringLiteral("Save only")},
+       {keyHint(KeyAction::Copy), QStringLiteral("Copy only")},
+       {keyHint(KeyAction::Save), QStringLiteral("Save only")},
        {QStringLiteral("Esc"), QStringLiteral("Arrow / twice close")}});
   // When zoomed past fit the image is larger than the viewport; clip content
   // to the band between the toolbar and the status so it cannot overdraw them.
@@ -6701,15 +6779,17 @@ void CaptureEditor::paintEdit(QPainter &painter) {
         QString tooltip;
         if (tool_ == Tool::Text) {
           tooltip = QStringLiteral(
-                        "%1 · S  M  L · current %2 · Scroll wheel · %3 · T "
+                        "%1 · S  M  L · current %2 · Scroll wheel · %3 · %4 "
                         "again cycles style · Shift+T cycles font")
-                        .arg(annotationTextFontName(textFont_))
-                        .arg(QString::fromLatin1(kTextSizeNames.at(
-                            static_cast<std::size_t>(textSizeIndex_))))
-                        .arg(textBackgroundName(textBackground_));
+                        .arg(annotationTextFontName(textFont_),
+                             QString::fromLatin1(kTextSizeNames.at(
+                                 static_cast<std::size_t>(textSizeIndex_))),
+                             textBackgroundName(textBackground_),
+                             keyHint(KeyAction::Text));
         } else if (tool_ == Tool::Redact) {
-          tooltip = QStringLiteral("Redact · %1 · D toggles style")
-                        .arg(redactionStyleName(redactionStyle_));
+          tooltip = QStringLiteral("Redact · %1 · %2 toggles style")
+                        .arg(redactionStyleName(redactionStyle_))
+                        .arg(keyHint(KeyAction::Redact));
         } else if (tool_ == Tool::Highlighter) {
           tooltip = highlighterTooltip();
         } else if (tool_ == Tool::Rectangle) {

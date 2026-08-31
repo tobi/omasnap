@@ -51,6 +51,8 @@ add_library(omasnap-core STATIC
   src/palette-config.hpp
   src/background-config.cpp
   src/background-config.hpp
+  src/keybind-config.cpp
+  src/keybind-config.hpp
   src/recent-snaps.cpp
   src/recent-snaps.hpp
   src/output-config.cpp
@@ -149,6 +151,8 @@ qt_add_executable(omasnap-smoke
   tests/cut-mapping-smoke.hpp
   tests/palette-config-smoke.cpp
   tests/palette-config-smoke.hpp
+  tests/keybind-config-smoke.cpp
+  tests/keybind-config-smoke.hpp
   src/cli-path.cpp
   src/recent-snaps.cpp
   src/recent-snaps.hpp
