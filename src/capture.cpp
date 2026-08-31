@@ -1407,6 +1407,8 @@ QString temporaryExportPath() {
 }
 
 QString operationLogPath(const QString &imagePath) {
+  if (imagePath.isEmpty())
+    return {};
   const QFileInfo info(imagePath);
   return info.dir().filePath(info.completeBaseName() + QStringLiteral(".json"));
 }

@@ -1,4 +1,5 @@
 #include "capture.hpp"
+#include "capture-delay.hpp"
 #include "cli-path.hpp"
 #include "editor.hpp"
 #include "instance-lock.hpp"
@@ -15,11 +16,14 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QGuiApplication>
+#include <QtGui/qguiapplication_platform.h>
 #include <QLockFile>
 #include <QScreen>
 #include <QSocketNotifier>
+#include <QTimer>
 #include <QUrl>
 #include <QWindow>
 
@@ -28,6 +32,7 @@
 #include <cerrno>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <wayland-client.h>
 
 namespace {
 class PosixSignalNotifier final : public QObject {
@@ -58,6 +63,7 @@ public:
 
     notifier_ = new QSocketNotifier(fds_[1], QSocketNotifier::Read, this);
     connect(notifier_, &QSocketNotifier::activated, this, [this] {
+      notified_ = true;
       notifier_->setEnabled(false);
       char bytes[32];
       while (::read(fds_[1], bytes, sizeof(bytes)) > 0) {
@@ -73,6 +79,8 @@ public:
       ::sigaction(SIGTERM, &previousSigterm_, nullptr);
     closeSockets();
   }
+
+  [[nodiscard]] bool wasNotified() const { return notified_; }
 
 private:
   void closeSockets() {
@@ -91,8 +99,127 @@ private:
   struct sigaction previousSigterm_{};
   bool sigintInstalled_ = false;
   bool sigtermInstalled_ = false;
+  bool notified_ = false;
   QSocketNotifier *notifier_ = nullptr;
 };
+
+QScreen *screenForMonitor(const MonitorInfo &monitor,
+                          bool fallbackToPrimary = true) {
+  for (QScreen *screen : QGuiApplication::screens()) {
+    if (screen->name() == monitor.name)
+      return screen;
+  }
+  return fallbackToPrimary ? QGuiApplication::primaryScreen() : nullptr;
+}
+
+enum class DelayRunResult { Completed, Cancelled, Failed };
+
+DelayRunResult runCaptureDelay(QScreen *screen, int seconds,
+                               CaptureDelayPosition position,
+                               const PosixSignalNotifier &signalNotifier,
+                               QString &error) {
+  if (seconds <= 0)
+    return DelayRunResult::Completed;
+  if (signalNotifier.wasNotified())
+    return DelayRunResult::Cancelled;
+  if (!screen) {
+    error = QStringLiteral("Could not find a screen for the delay countdown");
+    return DelayRunResult::Failed;
+  }
+
+  CaptureDelayWidget countdown(seconds, position);
+  countdown.setScreen(screen);
+  static_cast<void>(countdown.winId());
+  QWindow *handle = countdown.windowHandle();
+  LayerShellQt::Window *layer =
+      handle ? LayerShellQt::Window::get(handle) : nullptr;
+  if (!handle || !layer) {
+    error = QStringLiteral("Could not create delay countdown layer");
+    return DelayRunResult::Failed;
+  }
+
+  layer->setScope(QStringLiteral("omasnap-delay"));
+  layer->setScreen(screen);
+  layer->setLayer(LayerShellQt::Window::LayerOverlay);
+  LayerShellQt::Window::Anchors anchors;
+  if (position == CaptureDelayPosition::TopLeft ||
+      position == CaptureDelayPosition::TopRight)
+    anchors.setFlag(LayerShellQt::Window::AnchorTop);
+  else
+    anchors.setFlag(LayerShellQt::Window::AnchorBottom);
+  if (position == CaptureDelayPosition::TopLeft ||
+      position == CaptureDelayPosition::BottomLeft)
+    anchors.setFlag(LayerShellQt::Window::AnchorLeft);
+  else
+    anchors.setFlag(LayerShellQt::Window::AnchorRight);
+  layer->setAnchors(anchors);
+  layer->setMargins(QMargins(24, 24, 24, 24));
+  layer->setExclusiveZone(0);
+  layer->setDesiredSize(countdown.size());
+  layer->setKeyboardInteractivity(
+      LayerShellQt::Window::KeyboardInteractivityNone);
+  layer->setActivateOnShow(false);
+
+  QEventLoop delayLoop;
+  QTimer watchdog;
+  watchdog.setSingleShot(true);
+  watchdog.setInterval(seconds * 1000 + 2000);
+  bool completed = false;
+  bool timedOut = false;
+  bool screenRemoved = false;
+  QObject::connect(&countdown, &CaptureDelayWidget::countdownFinished,
+                   &delayLoop, [&] {
+                     completed = true;
+                     delayLoop.quit();
+                   });
+  QObject::connect(&watchdog, &QTimer::timeout, &delayLoop, [&] {
+    timedOut = true;
+    delayLoop.quit();
+  });
+  QObject::connect(qGuiApp, &QGuiApplication::screenRemoved, &delayLoop,
+                   [&](QScreen *removed) {
+                     if (removed == screen) {
+                       screenRemoved = true;
+                       delayLoop.quit();
+                     }
+                   });
+  countdown.show();
+  QTimer::singleShot(0, &countdown,
+                     &CaptureDelayWidget::startCountdown);
+  watchdog.start();
+  if (signalNotifier.wasNotified())
+    delayLoop.quit();
+  else
+    delayLoop.exec();
+  watchdog.stop();
+  // Completion, cancellation, timeout, and output removal all converge here.
+  countdown.hide();
+  countdown.destroySurface();
+  QCoreApplication::processEvents();
+
+  if (signalNotifier.wasNotified())
+    return DelayRunResult::Cancelled;
+  if (screenRemoved) {
+    error = QStringLiteral("Capture monitor was disconnected during the delay");
+    return DelayRunResult::Failed;
+  }
+  if (timedOut || !completed) {
+    error = QStringLiteral("Delay countdown stopped unexpectedly");
+    return DelayRunResult::Failed;
+  }
+
+  // Qt and ext-image-copy-capture use separate Wayland connections. A sync on
+  // Qt's connection guarantees the compositor has processed destruction of
+  // the countdown surface before the capture request is sent on the other one.
+  auto *wayland =
+      qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
+  if (!wayland || !wayland->display() ||
+      wl_display_roundtrip(wayland->display()) < 0) {
+    error = QStringLiteral("Could not synchronize the countdown surface");
+    return DelayRunResult::Failed;
+  }
+  return DelayRunResult::Completed;
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -183,6 +310,18 @@ int main(int argc, char **argv) {
       QStringLiteral("Capture a scrolling region and stitch it into one tall "
                      "image, then open it in the editor."));
   parser.addOption(scrollOption);
+  const QCommandLineOption delayOption(
+      QStringLiteral("delay"),
+      QStringLiteral("Wait 0-3600 seconds before capturing and show a "
+                     "countdown."),
+      QStringLiteral("seconds"));
+  const QCommandLineOption delayPositionOption(
+      QStringLiteral("delay-position"),
+      QStringLiteral("Countdown corner: top-left, top-right, bottom-left, or "
+                     "bottom-right (default: top-right)."),
+      QStringLiteral("position"));
+  parser.addOption(delayOption);
+  parser.addOption(delayPositionOption);
   parser.addPositionalArgument(
       QStringLiteral("target"),
       QStringLiteral("Capture mode (smart, region, windows, fullscreen) or the "
@@ -193,6 +332,24 @@ int main(int argc, char **argv) {
 
   QString filePath = parser.value(fileOption);
   const bool clipboardInput = parser.isSet(clipboardOption);
+  int delaySeconds = 0;
+  CaptureDelayPosition delayPosition = CaptureDelayPosition::TopRight;
+  QString optionError;
+  if (parser.isSet(delayOption) &&
+      !parseCaptureDelay(parser.value(delayOption), delaySeconds, optionError)) {
+    qCritical().noquote() << optionError;
+    return 2;
+  }
+  if (parser.isSet(delayPositionOption) && !parser.isSet(delayOption)) {
+    qCritical() << "--delay-position requires --delay";
+    return 2;
+  }
+  if (parser.isSet(delayPositionOption) &&
+      !parseCaptureDelayPosition(parser.value(delayPositionOption),
+                                 delayPosition, optionError)) {
+    qCritical().noquote() << optionError;
+    return 2;
+  }
 
   QuickOutputMode quickOutputMode = QuickOutputMode::None;
   if (parser.isSet(copyOption) && parser.isSet(saveOption))
@@ -216,7 +373,8 @@ int main(int argc, char **argv) {
   const QStringList positional = parser.positionalArguments();
   if (parser.isSet(pinOption)) {
     if (!filePath.isEmpty() || clipboardInput || requestedModes > 0 ||
-        !positional.isEmpty() || quickOutputMode != QuickOutputMode::None) {
+        !positional.isEmpty() || quickOutputMode != QuickOutputMode::None ||
+        parser.isSet(delayOption) || parser.isSet(delayPositionOption)) {
       qCritical()
           << "Pinned mode cannot be combined with capture or edit targets";
       return 2;
@@ -267,6 +425,10 @@ int main(int argc, char **argv) {
     return 2;
   }
   const bool editingImage = clipboardInput || !filePath.isEmpty();
+  if (editingImage && parser.isSet(delayOption)) {
+    qCritical() << "Delay options cannot be combined with an image input";
+    return 2;
+  }
   if (editingImage && quickOutputMode != QuickOutputMode::None) {
     qCritical()
         << "Quick output options cannot be combined with an image input";
@@ -351,8 +513,25 @@ int main(int argc, char **argv) {
   startupTimingMark(editingImage ? "input image prepared"
                                  : "focused monitor probed");
 
-  // Grab the output before the layer exists. ext-image-copy-capture waits for
-  // a composited frame, so mapping the dim overlay first photographs the veil.
+  if (!editingImage && delaySeconds > 0) {
+    QScreen *countdownScreen = screenForMonitor(capture.monitor, false);
+    // The launch-time focused output remains the capture target while the user
+    // arranges windows; changing keyboard focus during the wait must not move
+    // the promised capture to another monitor.
+    const DelayRunResult delayResult =
+        runCaptureDelay(countdownScreen, delaySeconds, delayPosition,
+                        signalNotifier, error);
+    if (delayResult == DelayRunResult::Cancelled)
+      return 0;
+    if (delayResult == DelayRunResult::Failed) {
+      qCritical().noquote() << error;
+      return 1;
+    }
+  }
+
+  // Grab the output before the editor layer exists. The delay surface has
+  // already unmapped and settled; ext-image-copy-capture would otherwise
+  // photograph either overlay.
   const bool instantFullscreenOutput =
       !editingImage && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
       quickOutputMode != QuickOutputMode::None;
@@ -384,12 +563,10 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  QScreen *targetScreen = QGuiApplication::primaryScreen();
-  for (QScreen *screen : QGuiApplication::screens()) {
-    if (screen->name() == capture.monitor.name) {
-      targetScreen = screen;
-      break;
-    }
+  QScreen *targetScreen = screenForMonitor(capture.monitor);
+  if (!targetScreen) {
+    qCritical() << "Could not find a screen for the capture overlay";
+    return 1;
   }
 
   if (!editingImage) {
