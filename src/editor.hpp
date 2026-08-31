@@ -16,7 +16,9 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <functional>
 #include <optional>
+#include <utility>
 
 class QKeyEvent;
 class QMouseEvent;
@@ -45,11 +47,14 @@ class CaptureEditor final : public QWidget {
   Q_OBJECT
 public:
   enum class CaptureMode { Region, Scroll, Window, Fullscreen, File };
+  using PostCaptureHandler =
+      std::function<bool(const QImage &image, QString &error)>;
 
   explicit CaptureEditor(CaptureData capture,
                          CaptureMode mode = CaptureMode::Region,
                          QuickOutputMode quickOutput = QuickOutputMode::None,
                          OperationLog log = {},
+                         PostCaptureHandler postCaptureHandler = {},
                          QWidget *parent = nullptr);
   ~CaptureEditor() override;
 
@@ -122,6 +127,10 @@ public:
    * for it would render the full capture for nothing and stall process exit.
    */
   void setSuppressSnapshots(bool suppress) { suppressSnapshots_ = suppress; }
+  /** Save/Enter replaces this Shelf image instead of creating a new file. */
+  void setReplacementOutputPath(QString path) {
+    replacementOutputPath_ = std::move(path);
+  }
 
 protected:
   bool eventFilter(QObject *watched, QEvent *event) override;
@@ -774,7 +783,9 @@ private:
   bool dragStartStateValid_ = false;
   bool dragChanged_ = false;
   QString snapshotPath_;
+  QString replacementOutputPath_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
+  PostCaptureHandler postCaptureHandler_;
   int pinCount_ = 0;
   QString status_ =
       QStringLiteral("Drag to select an area · Space selects a window");

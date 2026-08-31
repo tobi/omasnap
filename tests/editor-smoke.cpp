@@ -15,6 +15,7 @@
 #include "stitch-smoke.hpp"
 #include "stitch.hpp"
 #include "pin-lifecycle-smoke.hpp"
+#include "shelf-layout-smoke.hpp"
 #include "text-band.hpp"
 #include "transform-smoke.hpp"
 #include "eyedropper.hpp"
@@ -7470,6 +7471,75 @@ bool runAreaLastRegionSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+bool runPostCaptureHandoffSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = QRect(0, 0, 800, 600);
+  capture.monitor.pixelSize = QSize(800, 600);
+  capture.monitor.scale = 1.0;
+  capture.previewSize = QSize(800, 600);
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#365070")));
+
+  QImage handedOff;
+  CaptureEditor editor(
+      capture, CaptureEditor::CaptureMode::Region, QuickOutputMode::None, {},
+      [&handedOff](const QImage &image, QString &) {
+        handedOff = image;
+        return true;
+      });
+  editor.resize(capture.previewSize);
+  editor.show();
+  application.processEvents();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 150));
+  QTest::mouseMove(&editor, QPoint(500, 400), 10);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(500, 400));
+  application.processEvents();
+  if (handedOff.size() != QSize(400, 250) || editor.isVisible()) {
+    error = QStringLiteral("Post-capture handoff did not receive the region");
+    return false;
+  }
+  return true;
+}
+
+bool runShelfReplacementOutputSmoke(QApplication &application,
+                                    QString &error) {
+  const QString path = shelfSnapshotPath();
+  QImage source(400, 300, QImage::Format_ARGB32_Premultiplied);
+  source.fill(QColor(QStringLiteral("#365070")));
+  if (path.isEmpty() || !isShelfSnapshotPath(path) ||
+      !saveTemporarySnapshot(source, path, error))
+    return false;
+
+  CaptureData capture;
+  capture.monitor.geometry = QRect(QPoint(), source.size());
+  capture.monitor.pixelSize = source.size();
+  capture.monitor.scale = 1.0;
+  capture.previewSize = source.size();
+  capture.source = source;
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File);
+  editor.setReplacementOutputPath(path);
+  editor.resize(source.size());
+  editor.show();
+  application.processEvents();
+  QTest::keyClick(&editor, Qt::Key_A);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+  QTest::mouseMove(&editor, QPoint(250, 180), 10);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(250, 180));
+  QTest::keyClick(&editor, Qt::Key_S, Qt::ControlModifier);
+  editor.waitForExport();
+  const QImage updated(path);
+  QFile::remove(operationLogPath(path));
+  QFile::remove(path);
+  if (editor.isVisible() || updated.isNull() || updated == source) {
+    error = QStringLiteral("Shelf annotation did not replace its source item");
+    return false;
+  }
+  return true;
+}
+
 int main(int argc, char **argv) {
   // Re-executed by the instance-lock checks as the process holding the lock.
   const QString heldLockPath =
@@ -7530,6 +7600,14 @@ int main(int argc, char **argv) {
     return 0;
   }
   QString snapshotError;
+  if (!runPostCaptureHandoffSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 125;
+  }
+  if (!runShelfReplacementOutputSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 126;
+  }
   if (!runAreaLastRegionSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 119;
@@ -8995,6 +9073,12 @@ int main(int argc, char **argv) {
   if (!runInstanceLockSmoke(instanceError)) {
     qWarning().noquote() << instanceError;
     return 85;
+  }
+
+  QString shelfLayoutError;
+  if (!runShelfLayoutSmoke(shelfLayoutError)) {
+    qWarning().noquote() << shelfLayoutError;
+    return 89;
   }
   return 0;
 }

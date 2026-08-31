@@ -5,6 +5,7 @@
 #include "overlay-chrome.hpp"
 #include "pin.hpp"
 #include "recent-snaps.hpp"
+#include "shelf.hpp"
 #include "startup-timing.hpp"
 
 #include <LayerShellQt/Window>
@@ -19,6 +20,7 @@
 #include <QGuiApplication>
 #include <QLockFile>
 #include <QScreen>
+#include <QScopeGuard>
 #include <QSocketNotifier>
 #include <QUrl>
 #include <QWindow>
@@ -168,6 +170,11 @@ int main(int argc, char **argv) {
                      "instead of capturing the screen."),
       QStringLiteral("path"));
   parser.addOption(fileOption);
+  const QCommandLineOption editShelfOption(
+      QStringLiteral("edit-shelf"),
+      QStringLiteral("Edit a private Shelf image in place."),
+      QStringLiteral("path"));
+  parser.addOption(editShelfOption);
   const QCommandLineOption clipboardOption(
       QStringLiteral("clipboard"),
       QStringLiteral("Open the current clipboard image in the annotation "
@@ -183,6 +190,16 @@ int main(int argc, char **argv) {
       QStringLiteral("Capture a scrolling region and stitch it into one tall "
                      "image, then open it in the editor."));
   parser.addOption(scrollOption);
+  const QCommandLineOption shelfOption(
+      QStringLiteral("shelf"),
+      QStringLiteral("Add an image to the capture Shelf."),
+      QStringLiteral("path"));
+  const QCommandLineOption shelfScreenOption(
+      QStringLiteral("shelf-screen"),
+      QStringLiteral("Place the capture Shelf on this output."),
+      QStringLiteral("name"));
+  parser.addOption(shelfOption);
+  parser.addOption(shelfScreenOption);
   parser.addPositionalArgument(
       QStringLiteral("target"),
       QStringLiteral("Capture mode (smart, region, windows, fullscreen) or the "
@@ -192,7 +209,15 @@ int main(int argc, char **argv) {
   startupTimingMark("command line parsed");
 
   QString filePath = parser.value(fileOption);
+  const bool editingShelf = parser.isSet(editShelfOption);
   const bool clipboardInput = parser.isSet(clipboardOption);
+  if (editingShelf) {
+    if (!filePath.isEmpty() || clipboardInput) {
+      qCritical() << "--edit-shelf cannot be combined with another image input";
+      return 2;
+    }
+    filePath = parser.value(editShelfOption);
+  }
 
   QuickOutputMode quickOutputMode = QuickOutputMode::None;
   if (parser.isSet(copyOption) && parser.isSet(saveOption))
@@ -214,6 +239,23 @@ int main(int argc, char **argv) {
     captureMode = CaptureEditor::CaptureMode::Scroll;
 
   const QStringList positional = parser.positionalArguments();
+  if (parser.isSet(shelfOption)) {
+    if (parser.isSet(pinOption) || !filePath.isEmpty() || clipboardInput ||
+        requestedModes > 0 || !positional.isEmpty() ||
+        quickOutputMode != QuickOutputMode::None) {
+      qCritical()
+          << "Shelf mode cannot be combined with capture or edit targets";
+      return 2;
+    }
+    QString shelfPath = QUrl(parser.value(shelfOption)).toLocalFile();
+    if (shelfPath.isEmpty())
+      shelfPath = parser.value(shelfOption);
+    return runCaptureShelf(shelfPath, parser.value(shelfScreenOption));
+  }
+  if (parser.isSet(shelfScreenOption)) {
+    qCritical() << "--shelf-screen requires --shelf";
+    return 2;
+  }
   if (parser.isSet(pinOption)) {
     if (!filePath.isEmpty() || clipboardInput || requestedModes > 0 ||
         !positional.isEmpty() || quickOutputMode != QuickOutputMode::None) {
@@ -302,9 +344,16 @@ int main(int argc, char **argv) {
       qCritical().noquote() << lockResult.error;
     return lockResult.exitCode;
   }
+  const bool shelfHiddenForCapture =
+      !editingImage && setCaptureShelfHidden(true);
+  const auto restoreShelf = qScopeGuard([shelfHiddenForCapture] {
+    if (shelfHiddenForCapture)
+      static_cast<void>(setCaptureShelfHidden(false));
+  });
 
   CaptureData capture;
   OperationLog restoredLog;
+  QString replacementOutputPath;
   QString error;
   if (editingImage) {
     QImage image;
@@ -322,6 +371,10 @@ int main(int argc, char **argv) {
       QString localFile = QUrl(filePath).toLocalFile();
       if (localFile.isEmpty())
         localFile = filePath;
+      if (editingShelf && !isShelfSnapshotPath(localFile)) {
+        qCritical() << "--edit-shelf only accepts private Shelf snapshots";
+        return 2;
+      }
       image.load(localFile);
       if (image.isNull()) {
         qCritical().noquote()
@@ -329,6 +382,8 @@ int main(int argc, char **argv) {
         return 1;
       }
       inputName = localFile;
+      if (editingShelf)
+        replacementOutputPath = localFile;
       const QString sidecar = operationLogPath(localFile);
       if (QFile::exists(sidecar) &&
           !loadOperationLog(sidecar, restoredLog, error)) {
@@ -401,9 +456,18 @@ int main(int argc, char **argv) {
                              .arg(capture.windows.size());
   }
 
+  CaptureEditor::PostCaptureHandler postCaptureHandler;
+  if (!editingImage && quickOutputMode == QuickOutputMode::None) {
+    const QString screenName = capture.monitor.name;
+    postCaptureHandler = [screenName](const QImage &image, QString &outputError) {
+      return queueCaptureOnShelf(image, screenName, outputError);
+    };
+  }
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
-                       restoredLog);
+                       restoredLog, std::move(postCaptureHandler));
   startupTimingMark("CaptureEditor constructed");
+  if (!replacementOutputPath.isEmpty())
+    editor.setReplacementOutputPath(replacementOutputPath);
   editor.setScreen(targetScreen);
   editor.setGeometry(targetScreen->geometry());
   editor.winId();
