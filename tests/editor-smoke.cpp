@@ -315,9 +315,8 @@ bool runSelectUndimHoleCheck(QString &error) {
     CaptureData capture = selectHoleCapture(
         preview, sourceSize, 1.0, QRectF(windowRect),
         {{{windowRect}, QStringLiteral("w1"), QStringLiteral("one")}});
-    CaptureEditor editor(capture);
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::Window);
     prepareSelectEditor(editor, widget);
-    QTest::keyClick(&editor, Qt::Key_Space); // Region -> Window
     QTest::mouseMove(&editor, QPoint(100, 90), 20);
     QApplication::processEvents();
     const QImage ui = editor.grab().toImage();
@@ -336,9 +335,8 @@ bool runSelectUndimHoleCheck(QString &error) {
     CaptureData capture = selectHoleCapture(
         preview, sourceSize, 1.0, QRectF(windowRect),
         {{{windowRect}, QStringLiteral("w1"), QStringLiteral("rotated")}});
-    CaptureEditor editor(capture);
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::Window);
     prepareSelectEditor(editor, widget);
-    QTest::keyClick(&editor, Qt::Key_Space); // Region -> Window
     QTest::mouseMove(&editor, QPoint(320, 180), 20);
     QApplication::processEvents();
     const QImage ui = editor.grab().toImage();
@@ -393,9 +391,8 @@ bool runSelectUndimHoleCheck(QString &error) {
     CaptureData capture = selectHoleCapture(
         preview, sourceSize, 2.0, QRectF(windowRect),
         {{{windowRect}, QStringLiteral("w1"), QStringLiteral("hidpi")}});
-    CaptureEditor editor(capture);
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::Window);
     prepareSelectEditor(editor, widget);
-    QTest::keyClick(&editor, Qt::Key_Space); // Region -> Window
     QTest::mouseMove(&editor, QPoint(100, 90), 20);
     QApplication::processEvents();
     const QImage ui = editor.grab().toImage();
@@ -449,14 +446,22 @@ bool runMeasurementReadoutCheck(QString &error) {
   if (!expect(QStringLiteral("300, 240"), QStringLiteral("Idle pointer")))
     return false;
 
-  QTest::keyClick(&editor, Qt::Key_Space); // Region -> Window
-  QTest::mouseMove(&editor, QPoint(200, 150), 20);
-  QApplication::processEvents();
-  if (!expect(QStringLiteral("600 × 440"), QStringLiteral("Hovered window")))
-    return false;
-  QTest::keyClick(&editor, Qt::Key_Space); // Window -> Scroll
-  QTest::keyClick(&editor, Qt::Key_Space); // Scroll -> Region
-  QApplication::processEvents();
+  {
+    CaptureEditor windowEditor(capture, CaptureEditor::CaptureMode::Window);
+    windowEditor.setSuppressSnapshots(true);
+    windowEditor.resize(800, 600);
+    windowEditor.show();
+    QApplication::processEvents();
+    QTest::mouseMove(&windowEditor, QPoint(200, 150), 20);
+    QApplication::processEvents();
+    if (windowEditor.measurementText() != QStringLiteral("600 × 440")) {
+      error = QStringLiteral("Hovered window readout was \"%1\", expected "
+                             "\"600 × 440\"")
+                  .arg(windowEditor.measurementText());
+      return false;
+    }
+    windowEditor.close();
+  }
 
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(150, 120));
   QApplication::processEvents();
@@ -480,6 +485,119 @@ bool runMeasurementReadoutCheck(QString &error) {
   if (!expect(QString(), QStringLiteral("Settled edit phase")))
     return false;
   editor.close();
+  return true;
+}
+
+/** Smart selection infers a click target but keeps a real drag freeform. */
+bool runSmartSelectionSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = QRect(0, 0, 800, 600);
+  capture.monitor.pixelSize = QSize(800, 600);
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#406080")));
+  capture.previewSize = capture.source.size();
+  const QRect windowRect(80, 80, 300, 220);
+  capture.windows = {{windowRect, QStringLiteral("w1"), QStringLiteral("first"),
+                      QStringLiteral("test-app")}};
+
+  const auto prepare = [&application](CaptureEditor &editor) {
+    editor.setSuppressSnapshots(true);
+    editor.resize(800, 600);
+    editor.show();
+    application.processEvents();
+  };
+
+  CaptureEditor windowEditor(capture, CaptureEditor::CaptureMode::Smart);
+  prepare(windowEditor);
+  if (!windowEditor.smartModeForTest()) {
+    error = QStringLiteral("Smart capture did not enter inference mode");
+    return false;
+  }
+  if (!windowEditor.statusForTest().isEmpty()) {
+    error = QStringLiteral("Smart capture still showed an instruction pill");
+    return false;
+  }
+  QTest::mouseMove(&windowEditor, QPoint(200, 160), 20);
+  application.processEvents();
+  const QImage windowUi = windowEditor.grab().toImage();
+  const QColor sourceColor(QStringLiteral("#406080"));
+  if (!colorNear(grabLogicalPixel(windowUi, windowEditor, QPointF(300, 250)),
+                 sourceColor, 2) ||
+      !colorNear(grabLogicalPixel(windowUi, windowEditor, QPointF(700, 350)),
+                 dimmedSelectColor(sourceColor), 2)) {
+    error = QStringLiteral(
+        "Smart window target was not the only lit part of the monitor");
+    return false;
+  }
+  // A few pixels of pointer jitter still count as the old picker's bare click
+  // (area below 20 px²), rather than producing an accidental tiny crop.
+  QTest::mousePress(&windowEditor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(200, 160));
+  QTest::mouseMove(&windowEditor, QPoint(203, 163), 20);
+  QTest::mouseRelease(&windowEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(203, 163));
+  application.processEvents();
+  if (!windowEditor.editingForTest() ||
+      windowEditor.currentSelection() != QRectF(windowRect)) {
+    error = QStringLiteral("Smart click did not select the window underneath");
+    return false;
+  }
+  windowEditor.close();
+
+  CaptureEditor fullscreenEditor(capture, CaptureEditor::CaptureMode::Smart);
+  prepare(fullscreenEditor);
+  QTest::mouseMove(&fullscreenEditor, QPoint(700, 500), 20);
+  application.processEvents();
+  const QImage fullscreenUi = fullscreenEditor.grab().toImage();
+  if (!colorNear(
+          grabLogicalPixel(fullscreenUi, fullscreenEditor, QPointF(300, 250)),
+          sourceColor, 2) ||
+      !colorNear(
+          grabLogicalPixel(fullscreenUi, fullscreenEditor, QPointF(600, 350)),
+          sourceColor, 2)) {
+    error = QStringLiteral("Smart fullscreen target did not light the monitor");
+    return false;
+  }
+  QTest::mouseClick(&fullscreenEditor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(700, 500));
+  application.processEvents();
+  if (!fullscreenEditor.editingForTest() ||
+      fullscreenEditor.currentSelection() !=
+          QRectF(QPointF(), capture.previewSize)) {
+    error = QStringLiteral(
+        "Smart click outside a window did not select the full monitor");
+    return false;
+  }
+  fullscreenEditor.close();
+
+  CaptureEditor regionEditor(capture, CaptureEditor::CaptureMode::Smart);
+  prepare(regionEditor);
+  QTest::mousePress(&regionEditor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(100, 100));
+  QTest::mouseMove(&regionEditor, QPoint(500, 400), 20);
+  QTest::mouseRelease(&regionEditor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(500, 400));
+  application.processEvents();
+  if (!regionEditor.editingForTest() ||
+      regionEditor.currentSelection() != QRectF(100, 100, 400, 300)) {
+    error = QStringLiteral("Smart drag snapped instead of staying freeform");
+    return false;
+  }
+  regionEditor.close();
+
+  CaptureEditor explicitRegion(capture, CaptureEditor::CaptureMode::Region);
+  prepare(explicitRegion);
+  QTest::mouseClick(&explicitRegion, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(200, 160));
+  application.processEvents();
+  if (!explicitRegion.selectingForTest() ||
+      !explicitRegion.currentSelection().isEmpty()) {
+    error = QStringLiteral("Explicit region mode treated a click as smart");
+    return false;
+  }
+  explicitRegion.close();
   return true;
 }
 
@@ -831,8 +949,8 @@ bool runTextAwareHighlighterEditorCheck(QApplication &application,
   CaptureEditor editor(capture, CaptureEditor::CaptureMode::Fullscreen);
   editor.setSuppressSnapshots(true);
   // baseImageRect is exactly 400x240 at (30,135), making test gestures map
-  // 1:1 to annotation coordinates while leaving the toolbar clear of the
-  // capture tabs. The source itself remains 2x HiDPI.
+  // 1:1 to annotation coordinates while leaving the toolbar clear. The
+  // source itself remains 2x HiDPI.
   editor.resize(460, 500);
   editor.show();
   application.processEvents();
@@ -1300,6 +1418,11 @@ bool runPointerDamageRegionCheck(QString &error) {
   capture.previewSize = capture.monitor.pixelSize;
   capture.source = QImage(32, 18, QImage::Format_ARGB32_Premultiplied);
   capture.source.fill(QColor(QStringLiteral("#182030")));
+  capture.windows = {
+      {QRect(1000, 700, 800, 600), QStringLiteral("w1"),
+       QStringLiteral("one"), QStringLiteral("test-app")},
+      {QRect(3000, 1600, 900, 700), QStringLiteral("w2"),
+       QStringLiteral("two"), QStringLiteral("test-app")}};
 
   CaptureEditor editor(capture);
   editor.resize(capture.previewSize);
@@ -1317,6 +1440,22 @@ bool runPointerDamageRegionCheck(QString &error) {
         "Pointer chrome damaged %1 of %2 6K pixels instead of narrow regions")
                 .arg(damagedPixels)
                 .arg(screenPixels);
+    return false;
+  }
+
+  CaptureEditor smart(capture, CaptureEditor::CaptureMode::Smart);
+  smart.resize(capture.previewSize);
+  const QRegion betweenWindows = smart.windowHoverDamageForTest(0, 1);
+  if (!betweenWindows.contains(QPoint(998, 1000)) ||
+      !betweenWindows.contains(QPoint(2998, 1900)) ||
+      betweenWindows == QRegion(smart.rect())) {
+    error = QStringLiteral(
+        "Smart window damage did not cover both antialiased outlines locally");
+    return false;
+  }
+  if (smart.windowHoverDamageForTest(0, -1) != QRegion(smart.rect())) {
+    error = QStringLiteral(
+        "Smart window/fullscreen transition did not repaint the monitor");
     return false;
   }
   return true;
@@ -1943,8 +2082,8 @@ bool runTextClickAwayCommitCheck(QApplication &application, QString &error) {
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(650, 470));
   application.processEvents();
   // Screen points computed from the real image geometry, not hand-picked
-  // literals: robust to the toolbar/tab strip's own layout, which this click
-  // has to land through regardless of how tall it currently is.
+  // literals: robust to the toolbar's own layout, which this click has to
+  // land through regardless of how tall it currently is.
   const QPointF imageOrigin = editor.editImageRectForTest().topLeft();
   const qreal editScale = editor.editScaleForTest();
   const auto toScreen = [&](const QPointF &annotationPoint) {
@@ -2262,7 +2401,7 @@ bool runAnnotationLayerChecks(QApplication &application, QString &error) {
   // secret sits at annotation (200,200)-(300,260), centered on (250,230). A
   // loupe smaller than the redaction can only show redacted pixels if it
   // samples the redaction layer. Screen points are computed from the live
-  // image geometry (toScreen), not hand-picked, since the toolbar/tab chrome
+  // image geometry (toScreen), not hand-picked, since the toolbar chrome
   // above the image changes that geometry.
   const auto spotlightPreviewColor = [&](bool redact) {
     CaptureEditor editor(editorCapture, CaptureEditor::CaptureMode::Fullscreen);
@@ -2945,8 +3084,8 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
     return false;
   }
 
-  // y=60 clears the capture-kind tabs, which on a 320 px wide test surface
-  // reach almost edge to edge.
+  // Start below the top edge so this remains a representative region drag on
+  // the compact surface.
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(40, 60));
   QTest::mouseMove(&editor, QPoint(200, 180), 20);
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
@@ -3122,7 +3261,7 @@ bool runOpLogSmoke(QApplication &application, QString &error) {
   editor.show();
   application.processEvents();
   // Screen points computed from the live image geometry, not hand-picked:
-  // Fullscreen scales the 800x600 capture to fit under the toolbar/tab
+  // Fullscreen scales the 800x600 capture to fit under the toolbar
   // chrome, and that scale depends on their current height.
   const QPointF origin = editor.editImageRectForTest().topLeft();
   const qreal scale = editor.editScaleForTest();
@@ -3745,11 +3884,15 @@ bool runStuckModifierSmoke(QApplication &application, QString &error) {
 
   // A shallow drag, with the stale Shift the compositor still reports. It must
   // draw where it was dragged: snapped to 45°, this arrow would come out flat.
+  const QPoint arrowStart =
+      editor.toScreenPointForTest(QPointF(100, 295)).toPoint();
+  const QPoint arrowEnd =
+      editor.toScreenPointForTest(QPointF(300, 265)).toPoint();
   const QImage before = flushedSnapshot(editor, snapshotPath);
-  QTest::mousePress(&editor, Qt::LeftButton, Qt::ShiftModifier, QPoint(200, 411));
-  QTest::mouseMove(&editor, QPoint(400, 381), 20);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::ShiftModifier, arrowStart);
+  QTest::mouseMove(&editor, arrowEnd, 20);
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::ShiftModifier,
-                      QPoint(400, 381));
+                      arrowEnd);
   application.processEvents();
   const QImage drawn = flushedSnapshot(editor, snapshotPath);
   if (drawn == before) {
@@ -3777,10 +3920,10 @@ bool runStuckModifierSmoke(QApplication &application, QString &error) {
   // Shift means Shift: the same drag now snaps flat.
   QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
   application.processEvents();
-  QTest::mousePress(&editor, Qt::LeftButton, Qt::ShiftModifier, QPoint(200, 411));
-  QTest::mouseMove(&editor, QPoint(400, 381), 20);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::ShiftModifier, arrowStart);
+  QTest::mouseMove(&editor, arrowEnd, 20);
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::ShiftModifier,
-                      QPoint(400, 381));
+                      arrowEnd);
   application.processEvents();
   const QImage snapped = flushedSnapshot(editor, snapshotPath);
   const auto snappedInk = [&snapped](int x, int y) {
@@ -7084,10 +7227,10 @@ bool runViewportZoomSmoke(QApplication &application, QString &error) {
   return true;
 }
 
-/** The capture-kind tabs across the top: clicking Window and Region moves
- *  between the two modes Space toggles, and Fullscreen selects the monitor the
- *  way Ctrl+A does. */
-bool runSelectTabsSmoke(QApplication &application, QString &error) {
+/** Smart capture has no mode switcher: the former top strip is ordinary
+ *  selection space and Space does not change capture behavior. Scroll capture
+ *  remains reachable through S/--scroll and the editor's explicit button. */
+bool runCaptureControlsSmoke(QApplication &application, QString &error) {
   CaptureData capture;
   capture.monitor.name = QStringLiteral("TEST");
   capture.monitor.geometry = {0, 0, 800, 600};
@@ -7099,59 +7242,33 @@ bool runSelectTabsSmoke(QApplication &application, QString &error) {
   capture.windows = {{QRect(100, 100, 300, 200), QStringLiteral("w1"),
                       QStringLiteral("One"), QStringLiteral("firefox")}};
 
-  CaptureEditor editor(capture);
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::Smart);
   editor.resize(800, 600);
   editor.show();
   application.processEvents();
-  const auto clickOn = [&](CaptureEditor &target, const QString &label) {
-    const QRectF tab = target.selectTabRectForTest(label);
-    if (tab.isNull())
-      return false;
-    const QPoint at = tab.center().toPoint();
-    QTest::mouseMove(&target, at);
-    QTest::mouseClick(&target, Qt::LeftButton, Qt::NoModifier, at);
-    application.processEvents();
-    return true;
-  };
-  const auto click = [&](const QString &label) { return clickOn(editor, label); };
-  if (editor.windowModeForTest()) {
-    error = QStringLiteral("Select overlay did not start in region mode");
+  QTest::keyClick(&editor, Qt::Key_Space);
+  application.processEvents();
+  if (!editor.smartModeForTest() || !editor.selectingForTest() ||
+      editor.windowModeForTest() || editor.scrollModeForTest()) {
+    error = QStringLiteral("Space still changed the smart capture mode");
     return false;
   }
-  if (!click(QStringLiteral("WINDOW")) || !editor.windowModeForTest()) {
-    error = QStringLiteral("Window tab did not enter window mode");
-    return false;
-  }
-  if (!click(QStringLiteral("REGION")) || editor.windowModeForTest()) {
-    error = QStringLiteral("Region tab did not return to region mode");
-    return false;
-  }
-  if (!click(QStringLiteral("FULLSCREEN")) || editor.selectingForTest() ||
-      editor.renderCurrentOutput().size() != QSize(800, 600)) {
-    error = QStringLiteral("Fullscreen tab did not select the whole monitor");
-    return false;
-  }
-  // The strip stays in the edit phase as the way back; a tab there drops the
-  // edit and returns to the select phase in that mode.
-  if (!click(QStringLiteral("WINDOW")) || !editor.selectingForTest() ||
-      !editor.windowModeForTest()) {
-    error = QStringLiteral("Window tab from the editor did not return to "
-                           "window selection");
-    return false;
-  }
-  if (!click(QStringLiteral("FULLSCREEN")) || editor.selectingForTest())
-    return false;
-  if (!click(QStringLiteral("REGION")) || !editor.selectingForTest() ||
-      editor.windowModeForTest() || editor.annotationCountForTest() != 0) {
-    error = QStringLiteral("Region tab from the editor did not return to a "
-                           "clean region selection");
+  const QPoint formerSwitcher(400, 18);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, formerSwitcher);
+  QTest::mouseMove(&editor, QPoint(520, 100), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(520, 100));
+  application.processEvents();
+  if (!editor.editingForTest() ||
+      editor.currentSelection() != QRectF(400, 18, 120, 82)) {
+    error = QStringLiteral(
+        "The removed top switcher still intercepted region selection");
     return false;
   }
   editor.close();
 
-  // Scrolling Region is a mode of the same surface: drawing a region in it
-  // brings the scroll panel up in place; its tabs leave it; dismissing it
-  // returns to selecting in scroll mode.
+  // Drawing in explicit scroll mode brings the panel up in place; dismissing
+  // it returns to selecting in that same mode.
   {
     CaptureEditor scrollEditor(capture, CaptureEditor::CaptureMode::Scroll);
     scrollEditor.resize(800, 600);
@@ -7159,6 +7276,12 @@ bool runSelectTabsSmoke(QApplication &application, QString &error) {
     application.processEvents();
     if (!scrollEditor.scrollModeForTest() || !scrollEditor.selectingForTest()) {
       error = QStringLiteral("--scroll did not open selecting in scroll mode");
+      return false;
+    }
+    QTest::keyClick(&scrollEditor, Qt::Key_Space);
+    application.processEvents();
+    if (!scrollEditor.scrollModeForTest()) {
+      error = QStringLiteral("Space changed explicit scroll mode");
       return false;
     }
     QTest::mousePress(&scrollEditor, Qt::LeftButton, Qt::NoModifier,
@@ -7173,45 +7296,12 @@ bool runSelectTabsSmoke(QApplication &application, QString &error) {
                              "panel up");
       return false;
     }
-    // Region and Scrolling Region frame the same rectangle, so switching
-    // between them keeps it: the frame drawn for the scroll panel is the
-    // region that gets captured.
-    if (!clickOn(scrollEditor, QStringLiteral("REGION")) ||
-        !scrollEditor.editingForTest() ||
-        scrollEditor.renderCurrentOutput().size() != QSize(400, 300)) {
-      error = QStringLiteral("Region tab did not carry the scroll frame over");
-      return false;
-    }
-    // And back again: the region just captured frames the scroll panel.
-    if (!clickOn(scrollEditor, QStringLiteral("SCROLLING REGION")) ||
-        !scrollEditor.scrollPanelActiveForTest()) {
-      error = QStringLiteral("Scrolling Region tab did not carry the region "
-                             "over");
-      return false;
-    }
     QTest::keyClick(QApplication::focusWidget(), Qt::Key_Escape);
     application.processEvents();
     if (scrollEditor.scrollPanelActiveForTest() ||
         !scrollEditor.scrollModeForTest() || !scrollEditor.isVisible()) {
       error = QStringLiteral("Esc on the scroll panel did not return to "
                              "selecting a scrolling region");
-      return false;
-    }
-    // Space walks Region -> Window -> Scroll -> Region. Starting in scroll,
-    // the next step is Region (Fullscreen is skipped).
-    QTest::keyClick(&scrollEditor, Qt::Key_Space);
-    if (scrollEditor.windowModeForTest() || scrollEditor.scrollModeForTest()) {
-      error = QStringLiteral("Space from scroll mode did not step to region");
-      return false;
-    }
-    QTest::keyClick(&scrollEditor, Qt::Key_Space);
-    if (!scrollEditor.windowModeForTest() || scrollEditor.scrollModeForTest()) {
-      error = QStringLiteral("Space from region did not step to window");
-      return false;
-    }
-    QTest::keyClick(&scrollEditor, Qt::Key_Space);
-    if (!scrollEditor.scrollModeForTest()) {
-      error = QStringLiteral("Space did not cycle back round to scroll mode");
       return false;
     }
     // A stitched result is handed to the same editor and annotates like any
@@ -7244,28 +7334,24 @@ bool runSelectTabsSmoke(QApplication &application, QString &error) {
       error = QStringLiteral("Esc in the editor closed or left it");
       return false;
     }
-    // Back to selecting through the tab: a handed image is not the screen,
-    // so the monitor is captured again and selection resumes in scroll mode.
-    if (!clickOn(scrollEditor, QStringLiteral("SCROLLING REGION")) ||
-        !scrollEditor.selectingForTest() || !scrollEditor.scrollModeForTest()) {
-      error = QStringLiteral("Tab from a stitched edit did not return to "
-                             "selecting a scrolling region");
+    const QRectF scrollPill = scrollEditor.scrollPillRectForTest();
+    if (scrollPill.isNull()) {
+      error = QStringLiteral("Stitched edit did not offer scroll capture");
+      return false;
+    }
+    QTest::mouseClick(&scrollEditor, Qt::LeftButton, Qt::NoModifier,
+                      scrollPill.center().toPoint());
+    application.processEvents();
+    if (!scrollEditor.selectingForTest() ||
+        !scrollEditor.scrollModeForTest() ||
+        !scrollEditor.scrollPanelActiveForTest()) {
+      error = QStringLiteral(
+          "Scroll capture button did not reopen the region in the panel");
       return false;
     }
     scrollEditor.close();
     application.processEvents();
   }
-
-  // A file has no screen to go back to: no tabs in its editor.
-  CaptureEditor fileEditor(capture, CaptureEditor::CaptureMode::File);
-  fileEditor.resize(800, 600);
-  fileEditor.show();
-  application.processEvents();
-  if (!fileEditor.selectTabRectForTest(QStringLiteral("REGION")).isNull()) {
-    error = QStringLiteral("Tabs are offered when editing a file");
-    return false;
-  }
-  fileEditor.close();
   return true;
 }
 
@@ -7579,6 +7665,10 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 95;
   }
+  if (!runSmartSelectionSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 136;
+  }
   if (!runPointerDamageRegionCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 135;
@@ -7688,7 +7778,7 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 118;
   }
-  if (!runSelectTabsSmoke(application, snapshotError)) {
+  if (!runCaptureControlsSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 127;
   }
@@ -8053,6 +8143,8 @@ int main(int argc, char **argv) {
       return 75;
   }
   QDir(savedRoot).removeRecursively();
+  QImage hoverUi;
+  QImage keyboardWindowUi;
 
   {
     CaptureData cropCapture;
@@ -8081,27 +8173,33 @@ int main(int argc, char **argv) {
     QFile::remove(snapshotPath);
   }
 
+  {
+    CaptureEditor windowNavigationEditor(
+        capture, CaptureEditor::CaptureMode::Window);
+    windowNavigationEditor.resize(800, 600);
+    windowNavigationEditor.show();
+    application.processEvents();
+    QTest::mouseMove(&windowNavigationEditor, QPoint(200, 160), 20);
+    application.processEvents();
+    hoverUi = windowNavigationEditor.grab().toImage();
+    if (hoverUi.pixelColor(200, 160) !=
+        capture.source.pixelColor(200, 160))
+      return 7;
+    QTest::keyClick(&windowNavigationEditor, Qt::Key_Right, Qt::MetaModifier);
+    application.processEvents();
+    keyboardWindowUi = windowNavigationEditor.grab().toImage();
+    if (keyboardWindowUi.pixelColor(500, 200) !=
+            capture.source.pixelColor(500, 200) ||
+        keyboardWindowUi.pixelColor(200, 160) ==
+            capture.source.pixelColor(200, 160))
+      return 8;
+    windowNavigationEditor.close();
+  }
 
-  CaptureEditor editor(capture);
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::Region);
   editor.resize(800, 600);
   editor.show();
   application.processEvents();
-  QTest::keyClick(&editor, Qt::Key_Space); // Region -> Window
-  QTest::mouseMove(&editor, QPoint(200, 160), 20);
-  application.processEvents();
-  const QImage hoverUi = editor.grab().toImage();
-  if (hoverUi.pixelColor(200, 160) != capture.source.pixelColor(200, 160))
-    return 7;
-  QTest::keyClick(&editor, Qt::Key_Right, Qt::MetaModifier);
-  application.processEvents();
-  const QImage keyboardWindowUi = editor.grab().toImage();
-  if (keyboardWindowUi.pixelColor(500, 200) !=
-          capture.source.pixelColor(500, 200) ||
-      keyboardWindowUi.pixelColor(200, 160) ==
-          capture.source.pixelColor(200, 160))
-    return 8;
-  QTest::keyClick(&editor, Qt::Key_Space); // Window -> Scroll
-  QTest::keyClick(&editor, Qt::Key_Space); // Scroll -> Region
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
   QTest::mouseMove(&editor, QPoint(650, 470), 20);
   QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,

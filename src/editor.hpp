@@ -44,7 +44,7 @@ class Window;
 class CaptureEditor final : public QWidget {
   Q_OBJECT
 public:
-  enum class CaptureMode { Region, Scroll, Window, Fullscreen, File };
+  enum class CaptureMode { Smart, Region, Scroll, Window, Fullscreen, File };
 
   explicit CaptureEditor(CaptureData capture,
                          CaptureMode mode = CaptureMode::Region,
@@ -283,6 +283,9 @@ public:
   [[nodiscard]] bool scrollPanelActiveForTest() const {
     return scrollPanel_ != nullptr;
   }
+  [[nodiscard]] QRectF scrollPillRectForTest() const {
+    return scrollPillRect();
+  }
   /// Blocks until the shelf has been listed; false when it is empty.
   bool waitForRecents();
   /// Whether the shelf is fanned out. Test accessor.
@@ -308,6 +311,10 @@ public:
   [[nodiscard]] QRegion pointerMotionRegionForTest(const QPointF &point) const {
     return pointerMotionRegion(point);
   }
+  [[nodiscard]] QRegion windowHoverDamageForTest(int oldIndex,
+                                                  int newIndex) const {
+    return windowHoverDamage(oldIndex, newIndex);
+  }
   /// Whether the selection chrome is currently stepped back for an adjustment.
   /// Test accessor.
   [[nodiscard]] bool selectionFadedForTest() const {
@@ -322,6 +329,8 @@ public:
   [[nodiscard]] bool shapeMenuOpenForTest() const { return shapeMenuOpen_; }
   /// Whether window selection is active in the select phase. Test accessor.
   [[nodiscard]] bool windowModeForTest() const { return windowMode_; }
+  /// Whether clicks are inferred as window/fullscreen while drags stay areas.
+  [[nodiscard]] bool smartModeForTest() const { return smartMode_; }
   /// Where the image is drawn on screen right now (widget pixels), and the
   /// annotation-space-to-widget scale. Test accessor: lets a test compute
   /// exact click/expectation points from real geometry instead of hand math.
@@ -364,13 +373,6 @@ public:
   [[nodiscard]] bool exportingForTest() const { return phase_ == Phase::Export; }
   /// Whether the annotation editor is visible. Test accessor.
   [[nodiscard]] bool editingForTest() const { return phase_ == Phase::Edit; }
-  /// Widget rect of the capture-kind tab with `label`, or null. Test accessor.
-  [[nodiscard]] QRectF selectTabRectForTest(const QString &label) const {
-    for (const CaptureTab &item : selectTabItems())
-      if (captureTabLabel(item.kind) == label)
-        return item.rect;
-    return {};
-  }
   [[nodiscard]] bool textSizeMenuOpenForTest() const { return textSizeMenuOpen_; }
 
 private:
@@ -407,11 +409,10 @@ private:
   [[nodiscard]] int cropHandleAt(const QPointF &point) const;
   /// Fit-to-window rect for the selection (unaffected by the view zoom/pan).
   [[nodiscard]] QRectF baseImageRect() const;
-  /// Top of the toolbar row: just under the tab strip's fixed bottom edge,
-  /// independent of the image, so the two can never overlap.
+  /// Top of the toolbar row, inset from the surface edge.
   [[nodiscard]] qreal toolbarTop() const;
-  /// How much vertical room the tab strip and toolbar actually need, at the
-  /// current window width — the image's top margin, not a guessed constant.
+  /// How much vertical room the toolbar actually needs at the current window
+  /// width — the image's top margin, not a guessed constant.
   [[nodiscard]] qreal imageTopMargin() const;
   /// baseImageRect transformed by the current view zoom and pan (content and
   /// annotations map through this). Equals baseImageRect at zoom 1.
@@ -468,18 +469,11 @@ private:
   void beginText(const QPointF &point, int annotationIndex = -1,
                  int lineCapacity = 1);
   void chooseWindow(int index);
-  /// Capture-kind tabs across the top of the select overlay. Region and
-  /// Window are modes (one is always lit); Fullscreen acts at once.
-  using SelectTab = CaptureKind;
-  [[nodiscard]] QVector<CaptureTab> selectTabItems() const;
-  [[nodiscard]] int selectTabAt(const QPointF &position) const;
-  void activateSelectTab(SelectTab tab);
-  void setWindowMode(bool enabled);
   void setScrollMode(bool enabled);
   void selectFullscreen();
   /// Back from the editor to the select phase: the op log is dropped and the
   /// frozen screen is offered again for a new region or window.
-  void returnToSelect(bool windowMode);
+  void returnToSelect();
   /// Scroll capture takes over the surface with `region` drawn.
   void startScrollCapture(const QRect &region);
   /// Tears the scroll panel down; the surface is whole again.
@@ -488,8 +482,8 @@ private:
   void adoptStitched(const QImage &image);
   /// The editor's other mode of working: not a region of the frozen screen
   /// but an image handed to it, with the op log it was last edited with.
-  /// `kind` is the tab lit for it.
-  void adoptImage(QImage image, OperationLog log, SelectTab kind,
+  /// `kind` records which coordinate space produced it.
+  void adoptImage(QImage image, OperationLog log, CaptureMode kind,
                   const QString &status);
   /// Leaves the select phase with a drawn region: edit it, or scroll it.
   void commitRegion(const QRectF &region, const QString &editStatus);
@@ -499,7 +493,6 @@ private:
   /// Small pill under the image in the edit phase offering scroll capture of
   /// the drawn region; null when not offered.
   [[nodiscard]] QRectF scrollPillRect() const;
-  void paintSelectTabs(QPainter &painter);
   /// The shelf of earlier captures along the right edge of the select
   /// overlay: a stack of small cards that fans out under the pointer, each
   /// reopening its capture in place of taking a new one.
@@ -562,6 +555,7 @@ private:
   void paintOcrOverlay(QPainter &painter, const QRectF &image, qreal scale);
   void setStatus(QString status);
   [[nodiscard]] QRegion pointerMotionRegion(const QPointF &point) const;
+  [[nodiscard]] QRegion windowHoverDamage(int oldIndex, int newIndex) const;
   void queuePointerRepaint(const QRegion &damage);
   void toggleShapeFill();
   void toggleTextBackground();
@@ -603,12 +597,11 @@ private:
   /// The monitor as captured, kept apart from capture_.monitor (which a
   /// stitched result replaces) so the screen can be captured again.
   MonitorInfo liveMonitor_;
-  [[nodiscard]] CaptureKind selectKind() const;
   LayerShellQt::Window *layer_ = nullptr;
   ScrollCapturePanel *scrollPanel_ = nullptr;
   CaptureMode captureMode_ = CaptureMode::Region;
-  /// Which tab produced the capture being edited; lit in the edit phase.
-  SelectTab editedKind_ = SelectTab::Region;
+  /// Coordinate space used by the capture being edited.
+  CaptureMode editedMode_ = CaptureMode::Region;
   std::optional<RecentSnap> editingRecent_;
   QVector<RecentSnap> recents_;
   QFutureWatcher<QVector<RecentSnap>> recentsWatcher_;
@@ -672,6 +665,9 @@ private:
   qreal cutBandHi_ = 0.0;
   qreal cutDragRatio_ = 1.0;
   qreal cutDragOriginOffset_ = 0.0;
+  /// The default picker: a drag is a region; a click is the window under the
+  /// pointer, or the whole monitor when no window is there.
+  bool smartMode_ = false;
   bool windowMode_ = false;
   BackgroundStyle backgroundStyle_ = BackgroundStyle::None;
   bool imageShadow_ = true;
@@ -776,8 +772,7 @@ private:
   QString snapshotPath_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
   int pinCount_ = 0;
-  QString status_ =
-      QStringLiteral("Drag to select an area · Space selects a window");
+  QString status_ = QStringLiteral("Drag to select an area");
   InlineTextEdit *textEditor_ = nullptr;
   QPointF textPoint_;
   QVector<Annotation> originalSelectedAnnotations_;

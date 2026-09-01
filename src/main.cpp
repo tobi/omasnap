@@ -130,6 +130,9 @@ int main(int argc, char **argv) {
       "Native Wayland screenshot and annotation overlay for Hyprland and "
       "Omarchy.\n"
       "\n"
+      "With no target, drag for a region, click a window, or click open "
+      "space for\nthe full focused monitor.\n"
+      "\n"
       "Only one capture overlay runs at a time. Starting omasnap again while "
       "an\noverlay is open dismisses it: the running instance is asked to "
       "quit and the\nnew process exits without capturing, so the same hotkey "
@@ -150,7 +153,7 @@ int main(int argc, char **argv) {
       QStringLiteral("Start in window selection mode."));
   const QCommandLineOption regionOption(
       QStringLiteral("capture-region"),
-      QStringLiteral("Start in freeform region selection mode (default)."));
+      QStringLiteral("Start in freeform region selection mode."));
   parser.addOption(fullscreenOption);
   parser.addOption(windowOption);
   parser.addOption(regionOption);
@@ -185,8 +188,8 @@ int main(int argc, char **argv) {
   parser.addOption(scrollOption);
   parser.addPositionalArgument(
       QStringLiteral("target"),
-      QStringLiteral("Capture mode (smart, region, windows, fullscreen) or the "
-                     "path of an image file to edit."),
+      QStringLiteral("Capture mode (smart, region, windows, fullscreen, "
+                     "scroll) or the path of an image file to edit."),
       QStringLiteral("[target]"));
   parser.process(application);
   startupTimingMark("command line parsed");
@@ -202,7 +205,7 @@ int main(int argc, char **argv) {
   else if (parser.isSet(saveOption))
     quickOutputMode = QuickOutputMode::Save;
 
-  CaptureEditor::CaptureMode captureMode = CaptureEditor::CaptureMode::Region;
+  CaptureEditor::CaptureMode captureMode = CaptureEditor::CaptureMode::Smart;
   int requestedModes = parser.isSet(fullscreenOption) +
                        parser.isSet(windowOption) + parser.isSet(regionOption) +
                        parser.isSet(scrollOption);
@@ -242,8 +245,9 @@ int main(int argc, char **argv) {
       else if (mode == QStringLiteral("windows") ||
                mode == QStringLiteral("window"))
         captureMode = CaptureEditor::CaptureMode::Window;
-      else if (mode == QStringLiteral("smart") ||
-               mode == QStringLiteral("region"))
+      else if (mode == QStringLiteral("smart"))
+        captureMode = CaptureEditor::CaptureMode::Smart;
+      else if (mode == QStringLiteral("region"))
         captureMode = CaptureEditor::CaptureMode::Region;
       else if (mode == QStringLiteral("scroll"))
         captureMode = CaptureEditor::CaptureMode::Scroll;

@@ -73,8 +73,8 @@ constexpr std::array<const char *, 3> kTextSizeNames{"S", "M", "L"};
 constexpr qreal kToolbarWidth = 840;
 // Toolbar row to the top of the image below it.
 constexpr qreal kToolbarImageGap = 18.0;
-// Tab strip's bottom edge to the toolbar row above it.
-constexpr qreal kTabToolbarGap = 8.0;
+// Preserve the editor's established top inset without capture-mode chrome.
+constexpr qreal kToolbarTop = 39.0;
 /// Extra spacing between toolbar groups (history / style / tools / actions),
 /// so the row reads as clusters rather than one flat strip. Ordinary gaps are
 /// tightened from 4px to 2.5px; across the 20 gaps that exactly pays for these
@@ -788,9 +788,14 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
             cuts_.clear();
             redactionBaseStale_ = true;
             switch (pendingMode_) {
+            case CaptureMode::Smart:
+              smartMode_ = true;
+              hoveredWindow_ = windowAt(cursor_);
+              setStatus({});
+              break;
             case CaptureMode::Fullscreen:
               selection_ = QRectF(QPointF(), capture_.previewSize);
-              editedKind_ = SelectTab::Fullscreen;
+              editedMode_ = CaptureMode::Fullscreen;
               enterSelectedCapture(QStringLiteral(
                   "Full screen selected · native resolution · outer handles "
                   "crop"));
@@ -799,12 +804,10 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
               windowMode_ = true;
               hoveredWindow_ = windowAt(cursor_);
               setStatus(QStringLiteral(
-                  "Window mode · click or Super+Arrows then Enter · Space "
-                  "returns to area"));
+                  "Window mode · click or Super+Arrows then Enter"));
               break;
             case CaptureMode::Region:
-              setStatus(QStringLiteral(
-                  "Drag to select an area · Space selects a window"));
+              setStatus(QStringLiteral("Drag to select an area"));
               break;
             case CaptureMode::Scroll:
               scrollMode_ = true;
@@ -841,6 +844,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   });
 
   captureMode_ = mode;
+  smartMode_ = mode == CaptureMode::Smart;
   liveMonitor_ = capture_.monitor;
   if (capture_.source.isNull()) {
     // The pixel capture has not landed yet; the overlay shows a Capturing…
@@ -849,7 +853,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     pendingMode_ = mode;
     setStatus(QStringLiteral("Capturing screen…"));
   } else if (mode == CaptureMode::Fullscreen || mode == CaptureMode::File) {
-    editedKind_ = SelectTab::Fullscreen;
+    editedMode_ = CaptureMode::Fullscreen;
     if (ops_.isEmpty())
       selection_ = QRectF(QPointF(), capture_.previewSize);
     else
@@ -875,11 +879,14 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
       enterEdit(editStatus);
     else
       enterSelectedCapture(editStatus);
+  } else if (mode == CaptureMode::Smart) {
+    hoveredWindow_ = windowAt(cursor_);
+    setStatus({});
   } else if (mode == CaptureMode::Window) {
     windowMode_ = true;
     hoveredWindow_ = windowAt(cursor_);
-    setStatus(QStringLiteral("Window mode · click or Super+Arrows then Enter · "
-                             "Space selects a scrolling region"));
+    setStatus(QStringLiteral(
+        "Window mode · click or Super+Arrows then Enter"));
   } else if (mode == CaptureMode::Scroll) {
     scrollMode_ = true;
     setStatus(QStringLiteral(
@@ -1796,9 +1803,7 @@ QRectF CaptureEditor::normalizedSelection(const QPointF &first,
 }
 
 qreal CaptureEditor::toolbarTop() const {
-  // Just under the tab strip's fixed bottom edge — independent of the image,
-  // so the two can never overlap regardless of window size or image shape.
-  return kCaptureTabBarBottom + kTabToolbarGap;
+  return kToolbarTop;
 }
 
 qreal CaptureEditor::imageTopMargin() const {
@@ -2124,7 +2129,7 @@ QString CaptureEditor::measurementText() const {
   if (phase_ == Phase::Select) {
     if (recentsOpen_)
       return {};
-    if (windowMode_) {
+    if (windowMode_ || (smartMode_ && !dragging_ && hoveredWindow_ >= 0)) {
       if (hoveredWindow_ < 0 || hoveredWindow_ >= capture_.windows.size())
         return {};
       return formatPixelSize(
@@ -3011,11 +3016,15 @@ void CaptureEditor::handleEscape() {
     }
     dragging_ = false;
     selection_ = {};
-    setStatus(windowMode_
-                  ? QStringLiteral("Window mode · click or Super+Arrows then "
-                                   "Enter · Space selects a scrolling region")
-                  : QStringLiteral(
-                        "Drag to select an area · Space selects a window"));
+    if (smartMode_)
+      hoveredWindow_ = windowAt(cursor_);
+    if (smartMode_)
+      setStatus({});
+    else if (windowMode_)
+      setStatus(
+          QStringLiteral("Window mode · click or Super+Arrows then Enter"));
+    else
+      setStatus(QStringLiteral("Drag to select an area"));
     updatePointerCursor();
     update();
     return;
@@ -3060,8 +3069,9 @@ void CaptureEditor::chooseWindow(int index) {
     return;
   selection_ = QRectF(capture_.windows.at(index).rect);
   redactionBaseStale_ = true;
+  smartMode_ = false;
   windowMode_ = false;
-  editedKind_ = SelectTab::Window;
+  editedMode_ = CaptureMode::Window;
   enterSelectedCapture(QStringLiteral(
       "Window selected · Select moves layers · Ctrl+wheel zooms · outer handles "
       "crop"));
@@ -3673,16 +3683,20 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     const bool directionalKey =
         event->key() == Qt::Key_Left || event->key() == Qt::Key_Right ||
         event->key() == Qt::Key_Up || event->key() == Qt::Key_Down;
-    if (windowMode_ && directionalKey &&
+    if ((windowMode_ || smartMode_) && directionalKey &&
         event->modifiers().testFlag(Qt::MetaModifier)) {
       selectWindowInDirection(event->key());
       event->accept();
       update();
       return;
     }
-    if (windowMode_ &&
+    if ((windowMode_ || smartMode_) &&
         (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)) {
-      chooseWindow(hoveredWindow_);
+      if (smartMode_ && (hoveredWindow_ < 0 ||
+                         event->modifiers().testFlag(Qt::ControlModifier)))
+        selectFullscreen();
+      else
+        chooseWindow(hoveredWindow_);
       return;
     }
     if (!windowMode_ && !dragging_ && event->key() == Qt::Key_R &&
@@ -3709,27 +3723,6 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     }
     if (event->key() == Qt::Key_S && !event->modifiers()) {
       setScrollMode(!scrollMode_);
-      return;
-    }
-    if (event->key() == Qt::Key_Space) {
-      // Space steps along the tab strip. Fullscreen is skipped: it captures
-      // on the spot, and a cycle key that fires it on the way past would be
-      // a trap rather than a mode.
-      const QVector<CaptureTab> tabs = selectTabItems();
-      int current = -1;
-      for (int index = 0; index < tabs.size(); ++index) {
-        if (tabs.at(index).kind == selectKind()) {
-          current = index;
-          break;
-        }
-      }
-      for (int step = 1; step <= tabs.size(); ++step) {
-        const SelectTab next = tabs.at((current + step) % tabs.size()).kind;
-        if (next != SelectTab::Fullscreen) {
-          activateSelectTab(next);
-          break;
-        }
-      }
       return;
     }
     QWidget::keyPressEvent(event);
@@ -4021,13 +4014,6 @@ QRegion CaptureEditor::pointerMotionRegion(const QPointF &point) const {
   // and still tiny beside a 6K surface.
   add(QRectF(point.x() - 230, point.y() - 70, 460, 140));
 
-  for (const CaptureTab &tab : selectTabItems()) {
-    if (tab.rect.contains(point)) {
-      add(tab.rect.adjusted(-4, -4, 4, 4));
-      break;
-    }
-  }
-
   if (phase_ == Phase::Select) {
     if (!windowMode_ && !dragging_ && !recentsOpen_) {
       add(QRectF(point.x() - 3, 0, 7, height()));
@@ -4178,6 +4164,34 @@ QRegion CaptureEditor::pointerMotionRegion(const QPointF &point) const {
   return damage;
 }
 
+QRegion CaptureEditor::windowHoverDamage(int oldIndex, int newIndex) const {
+  const auto isWindow = [this](int index) {
+    return index >= 0 && index < capture_.windows.size();
+  };
+  const bool oldIsWindow = isWindow(oldIndex);
+  const bool newIsWindow = isWindow(newIndex);
+
+  // Smart mode changes the meaning of every backdrop pixel when it crosses
+  // between a window and fullscreen, so that transition needs one full paint.
+  if (smartMode_ && oldIsWindow != newIsWindow)
+    return QRegion(rect());
+
+  QRegion damage;
+  const auto addWindow = [this, &damage](int index) {
+    if (index < 0 || index >= capture_.windows.size())
+      return;
+    // The antialiased 2 px outline straddles the target rectangle. Include
+    // its outer pixels so the backing store cannot leave stale dark segments.
+    damage |= QRegion(
+        mapPreviewToWidget(QRectF(capture_.windows.at(index).rect))
+            .adjusted(-3, -3, 3, 3)
+            .toAlignedRect());
+  };
+  addWindow(oldIndex);
+  addWindow(newIndex);
+  return damage & QRegion(rect());
+}
+
 void CaptureEditor::queuePointerRepaint(const QRegion &damage) {
   pendingPointerDamage_ |= damage & QRegion(rect());
   if (!pendingPointerDamage_.isEmpty() && !pointerRepaintTimer_.isActive())
@@ -4201,7 +4215,12 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
   if (phase_ == Phase::Select) {
     if (!dragging_)
       trackRecentsHover();
-    if (windowMode_)
+    if (smartMode_) {
+      if (dragging_)
+        selection_ = normalizedSelection(dragStart_, cursor_);
+      else
+        hoveredWindow_ = recentsOpen_ ? -1 : windowAt(cursor_);
+    } else if (windowMode_)
       hoveredWindow_ = recentsOpen_ ? -1 : windowAt(cursor_);
     else if (dragging_)
       selection_ = normalizedSelection(dragStart_, cursor_);
@@ -4486,16 +4505,9 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
     const QRegion newHole(selection_.normalized().toAlignedRect());
     damage |= oldHole.xored(newHole);
   }
-  if (phase_ == Phase::Select && windowMode_ &&
+  if (phase_ == Phase::Select && (windowMode_ || smartMode_) &&
       oldHoveredWindow != hoveredWindow_) {
-    if (oldHoveredWindow >= 0 && oldHoveredWindow < capture_.windows.size())
-      damage |= QRegion(mapPreviewToWidget(
-                           QRectF(capture_.windows.at(oldHoveredWindow).rect))
-                           .toAlignedRect());
-    if (hoveredWindow_ >= 0 && hoveredWindow_ < capture_.windows.size())
-      damage |= QRegion(mapPreviewToWidget(
-                           QRectF(capture_.windows.at(hoveredWindow_).rect))
-                           .toAlignedRect());
+    damage |= windowHoverDamage(oldHoveredWindow, hoveredWindow_);
   }
   queuePointerRepaint(damage);
 }
@@ -4524,6 +4536,8 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
       if (dragging_) {
         dragging_ = false;
         selection_ = {};
+        if (smartMode_)
+          hoveredWindow_ = windowAt(cursor_);
         update();
       }
     } else if (phase_ == Phase::Edit) {
@@ -4554,17 +4568,11 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     return;
   cursor_ = event->position();
   endNudgeRun();
-  if (const int tab = selectTabAt(cursor_); tab >= 0) {
-    if (phase_ == Phase::Edit && textEditing())
-      acceptText();
-    activateSelectTab(selectTabItems().at(tab).kind);
-    return;
-  }
   if (phase_ == Phase::Edit && scrollPillRect().contains(cursor_)) {
     if (textEditing())
       acceptText();
     const QRect region = selection_.toRect();
-    returnToSelect(false);
+    returnToSelect();
     setScrollMode(true);
     startScrollCapture(region);
     return;
@@ -4583,6 +4591,13 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     dragStart_ = cursor_;
     selection_ = {};
     dragging_ = true;
+    if (smartMode_) {
+      hoveredWindow_ = -1;
+      // Starting a drag clears the inferred window/fullscreen target. This is
+      // an infrequent semantic transition, so repaint once before pointer
+      // motion returns to narrow damage regions.
+      update();
+    }
     return;
   }
   if (customColorPickerOpen_) {
@@ -4888,6 +4903,19 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
   if (phase_ == Phase::Select) {
     selection_ = normalizedSelection(dragStart_, event->position());
     dragging_ = false;
+    const qreal selectedArea = selection_.width() * selection_.height();
+    if (smartMode_ && (selectedArea < 20.0 || selection_.width() < 2.0 ||
+                       selection_.height() < 2.0)) {
+      selection_ = {};
+      const int window = windowAt(event->position());
+      if (window >= 0)
+        chooseWindow(window);
+      else
+        selectFullscreen();
+      updatePointerCursor();
+      update();
+      return;
+    }
     if (selection_.width() >= 2 && selection_.height() >= 2) {
       // Remember the drawn region for this session, so R can bring it back
       // on the next capture. A convenience, so failing to write is no error.
@@ -5316,14 +5344,13 @@ void CaptureEditor::updatePointerCursor() {
   }
   if (phase_ == Phase::Select) {
     clearHighlighterPreview();
-    applyCursor(windowMode_ || selectTabAt(cursor_) >= 0 ||
-                        (recentsOpen_ && recentAt(cursor_) >= 0)
-                    ? Qt::PointingHandCursor
-                : recentsOpen_ ? Qt::ArrowCursor
-                               : Qt::CrossCursor);
+    const bool pointing =
+        windowMode_ || (recentsOpen_ && recentAt(cursor_) >= 0);
+    applyCursor(pointing ? Qt::PointingHandCursor
+                         : recentsOpen_ ? Qt::ArrowCursor : Qt::CrossCursor);
     return;
   }
-  if (selectTabAt(cursor_) >= 0 || scrollPillRect().contains(cursor_)) {
+  if (scrollPillRect().contains(cursor_)) {
     clearHighlighterPreview();
     applyCursor(Qt::PointingHandCursor);
     return;
@@ -5458,69 +5485,12 @@ void CaptureEditor::refreshBackdropCache() {
   }
 }
 
-QVector<CaptureTab> CaptureEditor::selectTabItems() const {
-  // In the edit phase the strip stays as the way back: a tab there returns
-  // to the select phase in that mode. A file has no screen to go back to.
-  if (capture_.source.isNull() || (phase_ == Phase::Edit && !hasLiveScreen()))
-    return {};
-  return captureTabLayout(rect());
-}
-
-int CaptureEditor::selectTabAt(const QPointF &position) const {
-  return captureTabAt(selectTabItems(), position);
-}
-
-void CaptureEditor::activateSelectTab(SelectTab tab) {
-  // A frame drawn for a scrolling capture is the same rectangle a region
-  // capture wants, so it comes along to Region rather than being drawn a
-  // second time. Window and Fullscreen pick an area of their own, so there it
-  // is dropped.
-  QRect scrolled;
-  if (scrollPanel_) {
-    scrolled = scrollPanel_->region();
-    endScrollCapture();
-  }
-  const bool fromEdit = phase_ == Phase::Edit;
-  const QRect edited = selection_.toRect();
-  if (fromEdit)
-    returnToSelect(tab == SelectTab::Window);
-  switch (tab) {
-  case SelectTab::Region:
-    setScrollMode(false);
-    setWindowMode(false);
-    if (!scrolled.isEmpty())
-      commitRegion(QRectF(scrolled),
-                   QStringLiteral("Area selected · Select moves layers · wheel "
-                                  "zooms · outer handles crop"));
-    break;
-  case SelectTab::Scroll:
-    setScrollMode(true);
-    // From the editor the drawn region goes along, so the scroll frame
-    // starts where this capture was.
-    if (fromEdit)
-      startScrollCapture(edited);
-    break;
-  case SelectTab::Window:
-    setScrollMode(false);
-    setWindowMode(true);
-    break;
-  case SelectTab::Fullscreen:
-    selectFullscreen();
-    break;
-  }
-}
-
-CaptureKind CaptureEditor::selectKind() const {
-  return windowMode_ ? CaptureKind::Window
-         : scrollMode_ ? CaptureKind::Scroll
-                       : CaptureKind::Region;
-}
-
 bool CaptureEditor::hasLiveScreen() const {
   return captureMode_ != CaptureMode::File && !liveMonitor_.name.isEmpty();
 }
 
 void CaptureEditor::setScrollMode(bool enabled) {
+  smartMode_ = false;
   scrollMode_ = enabled;
   if (enabled)
     windowMode_ = false;
@@ -5529,20 +5499,20 @@ void CaptureEditor::setScrollMode(bool enabled) {
   hoveredWindow_ = -1;
   setStatus(enabled ? QStringLiteral("Drag to select a scrolling region · the "
                                      "page inside stays live")
-                    : QStringLiteral(
-                          "Drag to select an area · Space selects a window"));
+                    : QStringLiteral("Drag to select an area"));
   updatePointerCursor();
   update();
 }
 
 void CaptureEditor::commitRegion(const QRectF &region,
                                  const QString &editStatus) {
+  smartMode_ = false;
   selection_ = region;
   if (scrollMode_) {
     startScrollCapture(region.toRect());
     return;
   }
-  editedKind_ = SelectTab::Region;
+  editedMode_ = CaptureMode::Region;
   enterSelectedCapture(editStatus);
 }
 
@@ -5565,8 +5535,6 @@ void CaptureEditor::startScrollCapture(const QRect &region) {
     endScrollCapture();
     setScrollMode(true);
   });
-  connect(panel, &ScrollCapturePanel::tabRequested, this,
-          [this](CaptureKind kind) { activateSelectTab(kind); });
   panel->show();
   panel->raise();
   panel->setFocus(Qt::OtherFocusReason);
@@ -5598,7 +5566,7 @@ void CaptureEditor::adoptStitched(const QImage &image) {
   }
   const bool veryLong = image.width() > stitch::kWidelyOpenableEdge ||
                         image.height() > stitch::kWidelyOpenableEdge;
-  adoptImage(image, OperationLog(), SelectTab::Scroll,
+  adoptImage(image, OperationLog(), CaptureMode::Scroll,
              veryLong
                  ? QStringLiteral("Very long capture (%1 × %2) · edits and "
                                   "saves here as usual, but many apps cannot "
@@ -5611,13 +5579,12 @@ void CaptureEditor::adoptStitched(const QImage &image) {
                                   "crop"));
 }
 
-void CaptureEditor::adoptImage(QImage image, OperationLog log, SelectTab kind,
+void CaptureEditor::adoptImage(QImage image, OperationLog log, CaptureMode kind,
                                const QString &status) {
   // The editor normally works on a region of the frozen screen. Here it is
   // handed an image instead (a stitched scroll, a shelved capture, a file)
   // and edits that: the image is the whole capture, at the scale its log was
-  // written in, and the screen stays known by name so the tabs can capture
-  // it again.
+  // written in, while retaining the live monitor identity for scroll capture.
   if (scrollPanel_)
     endScrollCapture();
   if (textEditing()) {
@@ -5642,10 +5609,11 @@ void CaptureEditor::adoptImage(QImage image, OperationLog log, SelectTab kind,
   redactionBaseStale_ = true;
   backdropKey_ = 0;
   scrollMode_ = false;
+  smartMode_ = false;
   windowMode_ = false;
   hoveredWindow_ = -1;
   handedImage_ = true;
-  editedKind_ = kind;
+  editedMode_ = kind;
   selectedAnnotation_ = -1;
   selectedAnnotations_.clear();
   if (ops_.isEmpty())
@@ -5658,7 +5626,7 @@ void CaptureEditor::adoptImage(QImage image, OperationLog log, SelectTab kind,
   enterSelectedCapture(status);
 }
 
-void CaptureEditor::returnToSelect(bool windowMode) {
+void CaptureEditor::returnToSelect() {
   if (textEditing()) {
     textEditor_->clear();
     textEditor_->hide();
@@ -5687,22 +5655,19 @@ void CaptureEditor::returnToSelect(bool windowMode) {
     capture_.monitor = liveMonitor_;
     pristineSource_ = {};
     captureStarted_ = false;
-    startCapture(windowMode ? CaptureMode::Window : CaptureMode::Region, true);
+    startCapture(CaptureMode::Region, true);
   }
   phase_ = Phase::Select;
   tool_ = Tool::Select;
   viewZoom_ = 1.0;
   viewOffset_ = {};
   selection_ = {};
-  windowMode_ = windowMode;
-  hoveredWindow_ = windowMode_ ? windowAt(cursor_) : -1;
+  smartMode_ = false;
+  windowMode_ = false;
+  hoveredWindow_ = -1;
   redactionBaseStale_ = true;
   scheduleSnapshot();
-  setStatus(windowMode_
-                ? QStringLiteral("Window mode · click or Super+Arrows then "
-                                 "Enter · Space selects a scrolling region")
-                : QStringLiteral(
-                      "Drag to select an area · Space selects a window"));
+  setStatus(QStringLiteral("Drag to select an area"));
   updatePointerCursor();
   update();
 }
@@ -5727,22 +5692,6 @@ QRectF CaptureEditor::scrollPillRect() const {
   if (y + height > this->height() - 60)
     y = image.bottom() - height - 10;
   return QRectF(image.center().x() - width / 2.0, y, width, height);
-}
-
-void CaptureEditor::setWindowMode(bool enabled) {
-  windowMode_ = enabled;
-  if (enabled)
-    scrollMode_ = false;
-  dragging_ = false;
-  selection_ = {};
-  hoveredWindow_ = windowMode_ ? windowAt(cursor_) : -1;
-  setStatus(windowMode_
-                ? QStringLiteral("Window mode · click or Super+Arrows then "
-                                 "Enter · Space selects a scrolling region")
-                : QStringLiteral(
-                      "Drag to select an area · Space selects a window"));
-  updatePointerCursor();
-  update();
 }
 
 void CaptureEditor::loadRecents() {
@@ -5998,27 +5947,20 @@ void CaptureEditor::completeReopenRecent(const ReopenResult &result) {
     return;
   }
   editingRecent_ = result.recent;
-  adoptImage(result.image, result.log, SelectTab::Region,
+  adoptImage(result.image, result.log, CaptureMode::Region,
              QStringLiteral("Reopened recent capture · Copy/Save to output"));
 }
 
 void CaptureEditor::selectFullscreen() {
+  smartMode_ = false;
   windowMode_ = false;
   dragging_ = false;
   hoveredWindow_ = -1;
   selection_ = QRectF(QPointF(), capture_.previewSize);
-  editedKind_ = SelectTab::Fullscreen;
+  editedMode_ = CaptureMode::Fullscreen;
   enterSelectedCapture(QStringLiteral(
       "Full screen selected · native resolution · outer handles crop"));
   update();
-}
-
-void CaptureEditor::paintSelectTabs(QPainter &painter) {
-  // In the select phase the lit one is the mode the pointer is in; in the
-  // edit phase it is how this capture was taken.
-  const CaptureKind active =
-      phase_ == Phase::Edit ? editedKind_ : selectKind();
-  drawCaptureTabs(painter, selectTabItems(), active, cursor_);
 }
 
 void CaptureEditor::paintSelect(QPainter &painter) {
@@ -6033,28 +5975,47 @@ void CaptureEditor::paintSelect(QPainter &painter) {
     painter.drawPixmap(rect(), dimmedBackdrop_);
   }
   const bool exporting = phase_ == Phase::Export;
-  // Drawn first, low-opacity, no card: the live/frozen screen, the tabs, the
-  // selection all paint over it wherever they overlap.
-  if (!exporting)
-    drawHotkeyLegend(painter, rect(),
-                     {{QStringLiteral("Drag"), QStringLiteral("Area")},
-                      {QStringLiteral("Space"), QStringLiteral("Window")},
-                      {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
-                      {QStringLiteral("R"), QStringLiteral("Last region")},
-                      {QStringLiteral("S"), QStringLiteral("Scrolling region")},
-                      {QStringLiteral("Esc"), QStringLiteral("Close")}});
+  // Drawn first, low-opacity, no card: the live/frozen screen and selection
+  // paint over it wherever they overlap.
+  if (!exporting) {
+    QVector<QPair<QString, QString>> hotkeys;
+    if (smartMode_)
+      hotkeys = {
+          {QStringLiteral("Click"), QStringLiteral("Window / full screen")},
+          {QStringLiteral("Drag"), QStringLiteral("Area")},
+          {QStringLiteral("R"), QStringLiteral("Last region")},
+          {QStringLiteral("S"), QStringLiteral("Scrolling region")},
+          {QStringLiteral("Esc"), QStringLiteral("Close")}};
+    else
+      hotkeys = {{QStringLiteral("Drag"), QStringLiteral("Area")},
+                 {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
+                 {QStringLiteral("R"), QStringLiteral("Last region")},
+                 {QStringLiteral("S"), QStringLiteral("Scrolling region")},
+                 {QStringLiteral("Esc"), QStringLiteral("Close")}};
+    drawHotkeyLegend(painter, rect(), hotkeys);
+  }
 
+  const bool smartWindow = smartMode_ && !dragging_ && hoveredWindow_ >= 0 &&
+                           hoveredWindow_ < capture_.windows.size();
+  const bool smartFullscreen =
+      smartMode_ && !dragging_ && !recentsOpen_ && hoveredWindow_ < 0;
+  const bool targetWindow = windowMode_ || smartWindow;
   const bool haveHole =
       exporting ? !selection_.isEmpty()
-      : windowMode_ ? hoveredWindow_ >= 0 && hoveredWindow_ < capture_.windows.size()
-                    : !selection_.isEmpty();
+      : targetWindow
+          ? hoveredWindow_ >= 0 && hoveredWindow_ < capture_.windows.size()
+          : smartFullscreen || !selection_.isEmpty();
   if (haveHole) {
     const bool previewCoordinates =
-        windowMode_ || (exporting && editedKind_ != SelectTab::Region);
-    const QRectF previewHole =
-        windowMode_ ? QRectF(capture_.windows.at(hoveredWindow_).rect)
-        : previewCoordinates ? selection_
-                             : mapWidgetToPreview(selection_);
+        targetWindow || smartFullscreen ||
+        (exporting && editedMode_ != CaptureMode::Region);
+    QRectF previewHole = selection_;
+    if (targetWindow)
+      previewHole = QRectF(capture_.windows.at(hoveredWindow_).rect);
+    else if (smartFullscreen)
+      previewHole = QRectF(QPointF(), capture_.previewSize);
+    else if (!previewCoordinates)
+      previewHole = mapWidgetToPreview(selection_);
     const QRectF destHole = previewCoordinates
                                 ? mapPreviewToWidget(previewHole)
                                 : selection_;
@@ -6072,8 +6033,13 @@ void CaptureEditor::paintSelect(QPainter &painter) {
       painter.setBrush(Qt::NoBrush);
       painter.drawRect(mapPreviewToWidget(QRectF(window.rect)));
     }
+  } else if (smartWindow) {
+    painter.setPen(QPen(Qt::white, 2));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(
+        mapPreviewToWidget(QRectF(capture_.windows.at(hoveredWindow_).rect)));
   } else if (!selection_.isEmpty()) {
-    const QRectF outline = exporting && editedKind_ != SelectTab::Region
+    const QRectF outline = exporting && editedMode_ != CaptureMode::Region
                                ? mapPreviewToWidget(selection_)
                                : selection_;
     painter.setPen(QPen(Qt::white, 2));
@@ -6086,10 +6052,8 @@ void CaptureEditor::paintSelect(QPainter &painter) {
     painter.drawLine(QPointF(cursor_.x(), 0), QPointF(cursor_.x(), height()));
     painter.drawLine(QPointF(0, cursor_.y()), QPointF(width(), cursor_.y()));
   }
-  if (!exporting) {
+  if (!exporting)
     paintRecents(painter);
-    paintSelectTabs(painter);
-  }
   drawStatusPill(painter, rect(), status_);
   if (!exporting)
     drawMeasureBadge(painter, rect(), cursor_, measurementText());
@@ -6671,7 +6635,6 @@ void CaptureEditor::paintEdit(QPainter &painter) {
                            kTextSizeNames.at(static_cast<std::size_t>(index))));
     }
   }
-  paintSelectTabs(painter);
   if (const QRectF pill = scrollPillRect(); !pill.isNull()) {
     // A way into scroll capture from a region already drawn: the scroll
     // overlay opens with this frame in place.

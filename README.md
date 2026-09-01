@@ -9,7 +9,9 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 
 ## Features
 
-- Freeform region, window, and full-monitor capture modes.
+- Smart selection by default: drag a freeform region, click a window to crop
+  it, or click open monitor space for the full monitor. Explicit region,
+  window, fullscreen, and scrolling-region modes remain available.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
   region, a hovered window, or a crop handle is being sized.
@@ -160,7 +162,9 @@ omasnap --help
 
 ## CLI capture modes
 
-Running without arguments opens freeform region selection:
+Running without arguments opens smart selection. Drag for a freeform region,
+click a window to capture it, or click outside every window to capture the
+focused monitor:
 
 ```bash
 omasnap
@@ -192,7 +196,7 @@ Compatibility positional names are also accepted:
 omasnap region
 omasnap windows
 omasnap fullscreen
-omasnap smart       # maps to region selection
+omasnap smart
 ```
 
 These options choose what is initially selected; the editor still controls whether the
@@ -325,28 +329,25 @@ Install the corresponding Tesseract language data before adding a language to
 
 ### Capture selection
 
-Tabs across the top of the overlay switch the capture kind: **Region**,
-**Window**, **Scrolling Region**, **Fullscreen**. All four are modes of the
-same overlay. Scrolling Region selects exactly like Region; once the region is
-drawn, the page inside it goes live and the scroll controls appear in place.
-Region and Scrolling Region frame the same rectangle, so switching between the
-two keeps it: the frame drawn for a scrolling capture is captured as a region,
-and a region just captured frames the scroll panel. Window and Fullscreen pick
-an area of their own, so switching to either starts over.
-The tabs stay up in the editor too: a tab there drops the edit and goes back to
-capturing in that mode, and a small **Scroll capture** button under the image
-turns the drawn region into a scrolling capture. The keys below do the same
-without reaching for the pointer.
+The default smart picker infers the capture kind from the gesture: drag for a
+region, click a window for that window, or click open space for the full
+focused monitor. Whatever is lit is what will be captured.
+
+Press `S` before drawing to select a scrolling region; once drawn, the page
+inside it goes live and the scroll controls appear in place. A small **Scroll
+capture** button under an image already open in the editor turns that region
+into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
+`scroll` command-line targets remain available for scripts and keybindings.
 
 | Input | Action |
 |---|---|
+| Click | In smart mode, capture the window under the pointer, or the full monitor outside any window |
 | Drag | Select a region, with its native pixel size shown at the pointer |
-| `Space` | Step through the capture-kind tabs (Region, Window, Scrolling Region) |
 | `S` | Toggle scrolling-region mode |
 | `R` | Restore the last region drawn this session (same monitor) |
 | `SUPER + Arrow` | Move among windows in window mode |
 | `Enter` | Capture the highlighted window |
-| `Ctrl+A` | Select the full focused monitor (the Fullscreen tab) |
+| `Ctrl+A` | Select the full focused monitor |
 | Hover the right-edge stack | Fan out the five most recent captures; click one to reopen it |
 | `Esc` | Dismiss (while selecting; in the editor, `Esc` returns to Select and a second `Esc` closes) |
 
@@ -437,7 +438,7 @@ edges. After the canvas grows, those crop handles remain on the original source 
 make check
 ```
 
-The smoke executable exercises region/window/fullscreen startup modes, capture selection,
+The smoke executable exercises smart/region/window/fullscreen startup modes, capture selection,
 working-document persistence (source plus op-log JSON), annotation tools, undo/redo
 replay, vector movement and scaling, text editing, OCR, native-DPI output,
 endpoint-only line selection, annotation-driven canvas growth and clipping policies,
