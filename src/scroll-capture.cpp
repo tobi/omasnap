@@ -257,8 +257,6 @@ void ScrollCapturePanel::postStatus(const QString &status, bool warning) {
 
 QVector<QRect> ScrollCapturePanel::chromeRects() const {
   QVector<QRect> rects;
-  for (const CaptureTab &tab : captureTabLayout(rect()))
-    rects.push_back(tab.rect.toAlignedRect());
   if (phase_ == Phase::Selected) {
     for (int index = 0; index < kModeButtonCount; ++index)
       rects.push_back(modeButtonRect(index));
@@ -1012,7 +1010,7 @@ void ScrollCapturePanel::paintEvent(QPaintEvent *) {
     painter.fillRect(region_, Qt::transparent);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
     // Drawn first, low-opacity, no card: the live page, the region outline,
-    // the pills and the tab strip all paint over it wherever they overlap.
+    // the pills paint over it wherever they overlap.
     drawHotkeyLegend(painter, rect(), legendEntries());
     painter.setPen(QPen(statusWarning_ ? kWarn : kAccent, 2));
     painter.setBrush(Qt::NoBrush);
@@ -1098,10 +1096,6 @@ void ScrollCapturePanel::paintEvent(QPaintEvent *) {
       }
     }
   }
-  // The same tab strip every overlay wears, with this kind lit. The other
-  // tabs leave for the area overlay in that mode.
-  drawCaptureTabs(painter, captureTabLayout(rect()), CaptureKind::Scroll,
-                  cursor_);
   drawStatusPill(painter, rect(), status_);
 }
 
@@ -1144,16 +1138,6 @@ void ScrollCapturePanel::mousePressEvent(QMouseEvent *event) {
   }
   if (event->button() != Qt::LeftButton)
     return;
-  if (const int tab = captureTabAt(captureTabLayout(rect()), event->position());
-      tab >= 0) {
-    const CaptureKind kind = captureTabLayout(rect()).at(tab).kind;
-    if (kind != CaptureKind::Scroll) {
-      stopWorker();
-      phase_ = Phase::Finished;
-      emit tabRequested(kind);
-    }
-    return;
-  }
   if (phase_ == Phase::Capturing) {
     const QPoint point = event->position().toPoint();
     if (doneButtonRect().contains(point))
@@ -1205,8 +1189,6 @@ void ScrollCapturePanel::mousePressEvent(QMouseEvent *event) {
 
 void ScrollCapturePanel::mouseMoveEvent(QMouseEvent *event) {
   const QPoint point = event->position().toPoint();
-  cursor_ = point;
-  update(); // the tab strip's hover hint follows the pointer
   updateKeyboardZone(point);
   if (activeGrip_ != Grip::None) {
     // The button is down, so motion keeps arriving even over the hole.

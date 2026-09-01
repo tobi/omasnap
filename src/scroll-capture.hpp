@@ -78,7 +78,7 @@ class Window;
 /// drawn (the editor's own region selection is the selection): choose manual
 /// or automatic, scroll, or let the injection worker scroll, and stitch. It
 /// manages the layer's input hole and keyboard grab while it is up, and
-/// hands back with stitched(), dismissed() or tabRequested().
+/// hands back with stitched() or dismissed().
 class ScrollCapturePanel final : public QWidget {
   Q_OBJECT
 public:
@@ -89,24 +89,17 @@ public:
                      QWidget *parent);
   ~ScrollCapturePanel() override;
   /// Take over with `region` (logical surface pixels, clamped to the
-  /// surface and the chrome strip) already drawn. Call once, after show().
+  /// surface and the controls) already drawn. Call once, after show().
   void begin(const QRect &region);
   /// Stops any worker, hands the surface back whole (no hole, keyboard
   /// exclusive again) and hides. Safe to call from inside one of this
   /// panel's own signals; the destructor calls it too.
   void release();
-  /// The frame as it stands, in logical surface pixels. Empty until one has
-  /// been drawn. The editor reads it when another tab is picked, so the
-  /// rectangle carries across instead of having to be drawn again.
-  [[nodiscard]] QRect region() const { return region_; }
-
 signals:
   /// The capture is done: `image` is the stitched result.
   void stitched(const QImage &image);
   /// Cancelled, or a fresh region was asked for: back to selecting.
   void dismissed();
-  /// A tab on the strip other than Scrolling Region was clicked.
-  void tabRequested(CaptureKind kind);
 
 protected:
   void paintEvent(QPaintEvent *event) override;
@@ -204,8 +197,6 @@ private:
   MonitorInfo monitor_;
   LayerShellQt::Window *layer_ = nullptr;
   Phase phase_ = Phase::Selected;
-  /// Last pointer position, for the tab strip's hover hint.
-  QPoint cursor_;
   QRect region_; // logical widget pixels, normalized
   Mode mode_ = Mode::Manual;
   stitch::Axis axis_ = stitch::Axis::Vertical;
