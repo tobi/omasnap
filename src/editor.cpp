@@ -2280,8 +2280,10 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
   add(36, QStringLiteral("pin"), {},
       QStringLiteral("Pin on screen · P · Ctrl+C on the pin copies it"));
   add(36, QStringLiteral("copy"), {}, QStringLiteral("Copy only · Ctrl+C"));
-  add(40, QStringLiteral("both"), {}, QStringLiteral("Copy and save · Enter"));
-  add(36, QStringLiteral("save"), {}, QStringLiteral("Save only · Ctrl+S"));
+  add(40, QStringLiteral("both"), {},
+      QStringLiteral("Copy and save · Enter · Shift reveals"));
+  add(36, QStringLiteral("save"), {},
+      QStringLiteral("Save only · Ctrl+S · Shift reveals"));
   add(36, QStringLiteral("close"), {}, QStringLiteral("Close · Esc twice"));
 
   if (includeSubmenus && shapeMenuOpen_) {
@@ -3399,7 +3401,7 @@ void CaptureEditor::paintOcrOverlay(QPainter &painter, const QRectF &image,
   painter.restore();
 }
 
-void CaptureEditor::finish(OutputMode mode) {
+void CaptureEditor::finish(OutputMode mode, bool reveal) {
   if (busy_ || selection_.isEmpty())
     return;
   busy_ = true;
@@ -3418,47 +3420,50 @@ void CaptureEditor::finish(OutputMode mode) {
   const QImage backdrop = customBackdrop_;
   const QString appSlug =
       appFilenameSlug(dominantAppClass(capture_.windows, selection_));
-  finishWatcher_.setFuture(QtConcurrent::run([captureCopy, selection,
-                                              annotations, background,
-                                              imageShadow, canvasBoundary,
-                                              backdrop, appSlug, mode]() {
-    FinishResult result;
-    result.mode = mode;
-    const QImage image = renderCapture(captureCopy, selection, annotations,
-                                       background, imageShadow,
-                                       canvasBoundary, backdrop);
-    if (!image.isNull())
-      result.thumbnail = image.scaled(kRecentThumbEdge, kRecentThumbEdge,
-                                      Qt::KeepAspectRatio,
-                                      Qt::SmoothTransformation);
-    const QString exportPath = temporaryExportPath();
-    QString error;
-    if (image.isNull() || exportPath.isEmpty() ||
-        !saveTemporarySnapshot(image, exportPath, error, -1)) {
-      result.error = error.isEmpty()
-                         ? QStringLiteral("Could not prepare screenshot snapshot")
-                         : error;
-      return result;
-    }
-    if (mode == OutputMode::Copy || mode == OutputMode::Both) {
-      if (!copyPngFileToClipboard(exportPath, error)) {
-        QFile::remove(exportPath);
-        result.error = error;
+  finishWatcher_.setFuture(QtConcurrent::run(
+      [captureCopy, selection, annotations, background, imageShadow,
+       canvasBoundary, backdrop, appSlug, mode, reveal]() {
+        FinishResult result;
+        result.mode = mode;
+        const QImage image =
+            renderCapture(captureCopy, selection, annotations, background,
+                          imageShadow, canvasBoundary, backdrop);
+        if (!image.isNull())
+          result.thumbnail =
+              image.scaled(kRecentThumbEdge, kRecentThumbEdge,
+                           Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        const QString exportPath = temporaryExportPath();
+        QString error;
+        if (image.isNull() || exportPath.isEmpty() ||
+            !saveTemporarySnapshot(image, exportPath, error, -1)) {
+          result.error =
+              error.isEmpty()
+                  ? QStringLiteral("Could not prepare screenshot snapshot")
+                  : error;
+          return result;
+        }
+        if (mode == OutputMode::Copy || mode == OutputMode::Both) {
+          if (!copyPngFileToClipboard(exportPath, error)) {
+            QFile::remove(exportPath);
+            result.error = error;
+            return result;
+          }
+        }
+        if (mode == OutputMode::Save || mode == OutputMode::Both) {
+          result.saved = moveSnapshotToScreenshots(exportPath, error, appSlug);
+          if (result.saved.isEmpty()) {
+            QFile::remove(exportPath);
+            result.error = error;
+            return result;
+          }
+          if (reveal && !revealFileInFolder(result.saved))
+            qWarning().noquote()
+                << QStringLiteral("Could not reveal saved screenshot");
+        } else {
+          QFile::remove(exportPath);
+        }
         return result;
-      }
-    }
-    if (mode == OutputMode::Save || mode == OutputMode::Both) {
-      result.saved = moveSnapshotToScreenshots(exportPath, error, appSlug);
-      if (result.saved.isEmpty()) {
-        QFile::remove(exportPath);
-        result.error = error;
-        return result;
-      }
-    } else {
-      QFile::remove(exportPath);
-    }
-    return result;
-  }));
+      }));
 }
 
 void CaptureEditor::completeFinish(const FinishResult &result) {
@@ -3502,7 +3507,7 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
   close();
 }
 
-void CaptureEditor::handleToolbar(const QString &action) {
+void CaptureEditor::handleToolbar(const QString &action, bool reveal) {
   const Tool toolBefore = tool_;
   const QString statusBefore = status_;
   if (action == QStringLiteral("tool-select"))
@@ -3604,9 +3609,9 @@ void CaptureEditor::handleToolbar(const QString &action) {
   else if (action == QStringLiteral("copy"))
     finish(OutputMode::Copy);
   else if (action == QStringLiteral("both"))
-    finish(OutputMode::Both);
+    finish(OutputMode::Both, reveal);
   else if (action == QStringLiteral("save"))
-    finish(OutputMode::Save);
+    finish(OutputMode::Save, reveal);
   else if (action == QStringLiteral("close"))
     close();
   if (tool_ != toolBefore && status_ == statusBefore)
@@ -3786,13 +3791,17 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   } else if (event->matches(QKeySequence::Copy)) {
     finish(OutputMode::Copy);
     return;
-  } else if (event->matches(QKeySequence::Save)) {
-    finish(OutputMode::Save);
+  } else if (event->matches(QKeySequence::Save) ||
+             (event->key() == Qt::Key_S &&
+              event->modifiers() ==
+                  (Qt::ControlModifier | Qt::ShiftModifier))) {
+    finish(OutputMode::Save, event->modifiers().testFlag(Qt::ShiftModifier));
     return;
   } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
     // Enter on a selected label reopens it for editing; anywhere else it
     // finishes the capture.
-    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
+    if (!event->modifiers().testFlag(Qt::ShiftModifier) &&
+        selectedAnnotation_ >= 0 && selectedAnnotation_ < annotations_.size() &&
         selectedAnnotations_.size() <= 1 &&
         annotations_.at(selectedAnnotation_).kind == Annotation::Kind::Text &&
         !dragging_ && !textEditing()) {
@@ -3801,16 +3810,16 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       update();
       return;
     }
-    finish(OutputMode::Both);
+    finish(OutputMode::Both, event->modifiers().testFlag(Qt::ShiftModifier));
     return;
   } else if (event->key() == Qt::Key_D &&
              event->modifiers() == Qt::AltModifier) {
     duplicateSelectedAnnotation();
   } else if (const QPointF nudge = arrowKeyDelta(
-                 event->key(), heldModifiers(event->modifiers())
-                                       .testFlag(Qt::ShiftModifier)
-                                   ? kNudgeStepShift
-                                   : kNudgeStep);
+                 event->key(),
+                 heldModifiers(event->modifiers()).testFlag(Qt::ShiftModifier)
+                     ? kNudgeStepShift
+                     : kNudgeStep);
              !nudge.isNull() &&
              !heldModifiers(event->modifiers())
                   .testAnyFlags(Qt::ControlModifier | Qt::AltModifier |
@@ -3821,9 +3830,8 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     nudgeSelectedAnnotation(nudge);
   } else if (viewZoom_ > 1.0 && selectedAnnotation_ < 0 && !dragging_ &&
              !textEditing() &&
-             !event->modifiers().testAnyFlags(Qt::ControlModifier |
-                                              Qt::AltModifier |
-                                              Qt::MetaModifier) &&
+             !event->modifiers().testAnyFlags(
+                 Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier) &&
              (event->key() == Qt::Key_Left || event->key() == Qt::Key_Right ||
               event->key() == Qt::Key_Up || event->key() == Qt::Key_Down)) {
     // With nothing selected the arrows have nothing else to do, so they walk
@@ -4616,7 +4624,9 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
 
   for (const ToolbarButton &button : toolbarButtons()) {
     if (button.rect.contains(cursor_)) {
-      handleToolbar(button.action);
+      handleToolbar(
+          button.action,
+          heldModifiers(event->modifiers()).testFlag(Qt::ShiftModifier));
       return;
     }
   }
@@ -6130,9 +6140,9 @@ void CaptureEditor::paintEdit(QPainter &painter) {
        {QStringLiteral("B / P"), QStringLiteral("Backdrop / Pin on screen")},
        {QStringLiteral("Ctrl+Z"), QStringLiteral("Undo")},
        {QStringLiteral("Ctrl+Shift+Z"), QStringLiteral("Redo")},
-       {QStringLiteral("Enter"), QStringLiteral("Copy + save")},
+       {QStringLiteral("Enter"), QStringLiteral("Copy + save · Shift reveals")},
        {QStringLiteral("Ctrl+C"), QStringLiteral("Copy only")},
-       {QStringLiteral("Ctrl+S"), QStringLiteral("Save only")},
+       {QStringLiteral("Ctrl+S"), QStringLiteral("Save only · Shift reveals")},
        {QStringLiteral("Esc"), QStringLiteral("Arrow / twice close")}});
   // When zoomed past fit the image is larger than the viewport; clip content
   // to the band between the toolbar and the status so it cannot overdraw them.
