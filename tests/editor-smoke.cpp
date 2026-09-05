@@ -1829,6 +1829,296 @@ bool runNativeCaretHiddenCheck(QApplication &application, QString &error) {
   return true;
 }
 
+/** The draft's cream pill sits exactly where the committed pill lands. */
+bool runDraftPillStaysPutCheck(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(Qt::white);
+  capture.previewSize = capture.source.size();
+
+  CaptureEditor editor(capture);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+  QTest::mouseMove(&editor, QPoint(650, 470), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(650, 470));
+  application.processEvents();
+  QTest::keyClick(&editor, Qt::Key_T);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(180, 300));
+  application.processEvents();
+  auto *draft = qobject_cast<QPlainTextEdit *>(QApplication::focusWidget());
+  if (!draft) {
+    error = QStringLiteral("Text draft did not open for the pill check");
+    return false;
+  }
+  QTest::keyClicks(draft, QStringLiteral("hug"));
+  application.processEvents();
+
+  // The pill is the only cream ink over a white capture, so its bounding box
+  // before and after the committing click is the whole contract: any drift
+  // means the background jumps when typing ends.
+  const auto creamBounds = [](const QImage &frame, const QRect &region) {
+    QRect bounds;
+    for (int y = region.top(); y <= region.bottom(); ++y)
+      for (int x = region.left(); x <= region.right(); ++x) {
+        if (!frame.rect().contains(x, y))
+          continue;
+        const QColor color = frame.pixelColor(x, y);
+        if (std::abs(color.red() - 248) <= 3 &&
+            std::abs(color.green() - 245) <= 3 &&
+            std::abs(color.blue() - 235) <= 3)
+          bounds |= QRect(x, y, 1, 1);
+      }
+    return bounds;
+  };
+  const QRect wholeCanvas(0, 0, 800, 600);
+  const QRect draftPill = creamBounds(editor.grab().toImage(), wholeCanvas);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(550, 200));
+  application.processEvents();
+  const QRect committedPill =
+      creamBounds(editor.grab().toImage(), wholeCanvas);
+  if (draftPill.isNull() || committedPill.isNull()) {
+    error = QStringLiteral("Could not find the cream pill in a frame");
+    return false;
+  }
+  if (std::abs(draftPill.left() - committedPill.left()) > 1 ||
+      std::abs(draftPill.top() - committedPill.top()) > 1 ||
+      std::abs(draftPill.right() - committedPill.right()) > 1 ||
+      std::abs(draftPill.bottom() - committedPill.bottom()) > 1) {
+    error = QStringLiteral("Pill moved on commit: draft %1,%2 %3x%4 vs %5,%6 %7x%8")
+                .arg(draftPill.x()).arg(draftPill.y())
+                .arg(draftPill.width()).arg(draftPill.height())
+                .arg(committedPill.x()).arg(committedPill.y())
+                .arg(committedPill.width()).arg(committedPill.height());
+    return false;
+  }
+
+  // A draft typed toward the right edge wraps there while typing, and the
+  // committed pill lands exactly on the wrapped draft's pill. The scan region
+  // keeps the first annotation's pill out of the comparison.
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(350, 355));
+  application.processEvents();
+  draft = qobject_cast<QPlainTextEdit *>(QApplication::focusWidget());
+  if (!draft) {
+    error = QStringLiteral("Second text draft did not open");
+    return false;
+  }
+  QTest::keyClicks(
+      draft, QStringLiteral("wrap wrap wrap wrap wrap wrap wrap wrap wrap"));
+  application.processEvents();
+  const QRect wrapRegion(300, 330, 500, 230);
+  const QRect wrappedDraftPill =
+      creamBounds(editor.grab().toImage(), wrapRegion);
+  const QFontMetricsF wrapMetrics(draft->font());
+  if (wrappedDraftPill.height() < wrapMetrics.lineSpacing() * 1.6) {
+    error = QStringLiteral("Draft did not wrap at the canvas edge while typing");
+    return false;
+  }
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(550, 150));
+  application.processEvents();
+  const QRect wrappedCommittedPill =
+      creamBounds(editor.grab().toImage(), wrapRegion);
+  if (std::abs(wrappedDraftPill.left() - wrappedCommittedPill.left()) > 1 ||
+      std::abs(wrappedDraftPill.top() - wrappedCommittedPill.top()) > 1 ||
+      std::abs(wrappedDraftPill.right() - wrappedCommittedPill.right()) > 1 ||
+      std::abs(wrappedDraftPill.bottom() - wrappedCommittedPill.bottom()) > 1) {
+    error = QStringLiteral(
+                "Wrapped pill moved on commit: draft %1,%2 %3x%4 vs %5,%6 %7x%8")
+                .arg(wrappedDraftPill.x()).arg(wrappedDraftPill.y())
+                .arg(wrappedDraftPill.width()).arg(wrappedDraftPill.height())
+                .arg(wrappedCommittedPill.x()).arg(wrappedCommittedPill.y())
+                .arg(wrappedCommittedPill.width())
+                .arg(wrappedCommittedPill.height());
+    return false;
+  }
+  return true;
+}
+
+/** A text layer may grow past the source edge, where its real wrap handle
+ *  remains reachable and can be dragged farther into the expanded canvas. */
+bool runTextOverrunHandleCheck(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  capture.previewSize = capture.source.size();
+
+  const QRectF selection(100, 100, 550, 370);
+  const qreal ascent = QFontMetricsF(annotationTextFont(5.0)).ascent();
+  Annotation text;
+  text.kind = Annotation::Kind::Text;
+  text.start = QPointF(500, 145 + ascent);
+  text.text = QStringLiteral("wrap wrap wrap wrap wrap wrap wrap wrap wrap wrap");
+  text.color = QColor(QStringLiteral("#ff375f"));
+  text.size = 5;
+  text.textWidth = 180.0;
+  text.textBackground = TextBackground::Plain;
+  text.id = 1;
+  OperationLog log;
+  Operation cropOp;
+  cropOp.type = Operation::Type::Crop;
+  cropOp.crop = selection;
+  log.ops.push_back(cropOp);
+  Operation annotate;
+  annotate.type = Operation::Type::Annotate;
+  annotate.annotations = {text};
+  log.ops.push_back(std::move(annotate));
+  log.index = log.ops.size();
+  log.nextId = 2;
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                       QuickOutputMode::None, log);
+  editor.setSuppressSnapshots(true);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+
+  const QRectF sourceFrame(QPointF(), selection.size());
+  if (editor.currentCanvasForTest().right() <= sourceFrame.right()) {
+    error = QStringLiteral("Text past the source edge did not grow the canvas");
+    return false;
+  }
+
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseClick(
+      &editor, Qt::LeftButton, Qt::NoModifier,
+      editor.annotationPointToWidgetForTest(annotationTextBounds(text).center())
+          .toPoint());
+  application.processEvents();
+  if (editor.selectedCountForTest() != 1) {
+    error = QStringLiteral("Text on the grown canvas could not be selected");
+    return false;
+  }
+
+  const QPoint handleSpot = editor
+                                .annotationPointToWidgetForTest(
+                                    annotationTextBounds(text).bottomRight())
+                                .toPoint();
+  QTest::mouseMove(&editor, handleSpot, 20);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::SizeHorCursor) {
+    error =
+        QStringLiteral("Expanded text's real wrap handle was not reachable");
+    return false;
+  }
+
+  const int operationsBefore = editor.operationLog().size();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, handleSpot);
+  const QPoint wayRight(std::min(editor.width() - 2, handleSpot.x() + 70),
+                        handleSpot.y());
+  QTest::mouseMove(&editor, wayRight, 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, wayRight);
+  application.processEvents();
+  const QVector<Operation> &operations = editor.operationLog();
+  if (operations.size() != operationsBefore + 1 ||
+      operations.constLast().type != Operation::Type::Patch ||
+      operations.constLast().annotations.size() != 1 ||
+      operations.constLast().annotations.constFirst().textWidth <=
+          text.textWidth ||
+      editor.currentCanvasForTest().right() <= sourceFrame.right()) {
+    error = QStringLiteral("Dragging the off-canvas handle did not widen text "
+                           "on the grown canvas");
+    return false;
+  }
+  return true;
+}
+
+/** A multiline text layer grows the canvas downward, keeping its real
+ *  bottom-right wrap handle reachable there. */
+bool runTextVerticalOverrunHandleCheck(QApplication &application,
+                                       QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  capture.previewSize = capture.source.size();
+
+  const QRectF selection(100, 100, 550, 370);
+  Annotation text;
+  text.kind = Annotation::Kind::Text;
+  text.start = {80, 330};
+  text.text = QStringLiteral("first line\nsecond line\nthird line");
+  text.color = QColor(QStringLiteral("#ff375f"));
+  text.size = 5;
+  text.textWidth = 180.0;
+  text.textBackground = TextBackground::Plain;
+  text.id = 1;
+  OperationLog log;
+  Operation cropOp;
+  cropOp.type = Operation::Type::Crop;
+  cropOp.crop = selection;
+  log.ops.push_back(cropOp);
+  Operation annotate;
+  annotate.type = Operation::Type::Annotate;
+  annotate.annotations = {text};
+  log.ops.push_back(std::move(annotate));
+  log.index = log.ops.size();
+  log.nextId = 2;
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                       QuickOutputMode::None, log);
+  editor.setSuppressSnapshots(true);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+
+  if (editor.currentCanvasForTest().bottom() <= selection.height()) {
+    error = QStringLiteral("Multiline text did not grow the canvas downward");
+    return false;
+  }
+
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseClick(
+      &editor, Qt::LeftButton, Qt::NoModifier,
+      editor.annotationPointToWidgetForTest(annotationTextBounds(text).center())
+          .toPoint());
+  application.processEvents();
+  if (editor.selectedCountForTest() != 1) {
+    error = QStringLiteral("Vertically overrun text could not be selected");
+    return false;
+  }
+
+  const QPoint handleSpot = editor
+                                .annotationPointToWidgetForTest(
+                                    annotationTextBounds(text).bottomRight())
+                                .toPoint();
+  QTest::mouseMove(&editor, handleSpot, 20);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::SizeHorCursor) {
+    error = QStringLiteral("Text below the source lost its real wrap handle");
+    return false;
+  }
+
+  const int operationsBefore = editor.operationLog().size();
+  const QPoint inward(std::max(0, handleSpot.x() - 70), handleSpot.y());
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, handleSpot);
+  QTest::mouseMove(&editor, inward, 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, inward);
+  application.processEvents();
+  const QVector<Operation> &operations = editor.operationLog();
+  if (operations.size() != operationsBefore + 1 ||
+      operations.constLast().type != Operation::Type::Patch ||
+      operations.constLast().annotations.size() != 1 ||
+      operations.constLast().annotations.constFirst().textWidth >=
+          text.textWidth) {
+    error = QStringLiteral(
+        "Dragging the rescued vertical handle did not resize text inward");
+    return false;
+  }
+  return true;
+}
+
 /** The view holds still while a text draft is open. */
 bool runDraftViewLockCheck(QApplication &application, QString &error) {
   CaptureData capture;
@@ -1994,6 +2284,11 @@ bool runTextClickAwayCommitCheck(QApplication &application, QString &error) {
 
   const Annotation toolbar =
       textAnnotation({325, 180}, QStringLiteral("Toolbar"));
+  // The committing click above did only that; a second click opens the next
+  // editor, with the text tool still armed.
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                    toScreen({325, 180}));
+  application.processEvents();
   // The arrow button sits in the spaced toolbar above the capture.
   QTest::keyClicks(QApplication::focusWidget(), toolbar.text);
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
@@ -5504,6 +5799,113 @@ bool runTextFontSmoke(QApplication &application, QString &error) {
 }
 
 /** Runs the interaction and rendering smoke checks. */
+/** Checks text wrapping: a long line breaks at the wrap width, hard newlines
+ *  survive alongside it, a word too long for the width breaks mid-word rather
+ *  than running off, and a bounds box follows the wrapped shape. */
+bool runTextWrapRenderingCheck(QString &error) {
+  error = QStringLiteral("Text wrap rendering check failed");
+  Annotation text;
+  text.kind = Annotation::Kind::Text;
+  text.start = {20, 40};
+  text.color = QColor(QStringLiteral("#ff375f"));
+  text.size = 5;
+  text.text = QStringLiteral("the quick brown fox jumps over the lazy dog");
+
+  // Unbounded: one line, however long it is.
+  if (annotationTextLines(text, 0.0).size() != 1) {
+    error = QStringLiteral("Unbounded text did not stay on one line");
+    return false;
+  }
+
+  // A dragged width breaks it into several.
+  text.textWidth = 120.0;
+  const QStringList wrapped = annotationTextLines(text, 0.0);
+  if (wrapped.size() < 2) {
+    error = QStringLiteral("Text did not wrap at its dragged width");
+    return false;
+  }
+  const QFontMetricsF metrics(annotationTextFont(text.size));
+  for (const QString &line : wrapped) {
+    if (metrics.horizontalAdvance(line) > 120.0) {
+      error = QStringLiteral("A wrapped line ran past the wrap width");
+      return false;
+    }
+  }
+
+  // The bounds follow the wrapped shape rather than the unwrapped run.
+  const QRectF box = annotationTextBounds(text, 0.0);
+  if (box.width() > 120.0 + 2 * std::max(4.0, metrics.height() * 0.18) + 1.0) {
+    error = QStringLiteral("Wrapped text bounds kept the unwrapped width");
+    return false;
+  }
+
+  // Hard newlines still split, and wrapping applies within each paragraph.
+  text.text = QStringLiteral("one\ntwo three four five six seven eight nine");
+  const QStringList mixed = annotationTextLines(text, 0.0);
+  if (mixed.size() < 3 || mixed.first() != QStringLiteral("one")) {
+    error = QStringLiteral("Hard newlines did not survive wrapping");
+    return false;
+  }
+
+  // A single word wider than the wrap width breaks rather than overflowing.
+  text.text = QStringLiteral("supercalifragilisticexpialidocious");
+  for (const QString &line : annotationTextLines(text, 0.0)) {
+    if (metrics.horizontalAdvance(line) > 120.0) {
+      error = QStringLiteral("An over-long word ran past the wrap width");
+      return false;
+    }
+  }
+
+  // With no width of its own, text wraps at the canvas edge instead.
+  text.textWidth = 0.0;
+  text.text = QStringLiteral("the quick brown fox jumps over the lazy dog");
+  if (annotationTextLines(text, 200.0).size() < 2) {
+    error = QStringLiteral("Text did not wrap at the canvas edge");
+    return false;
+  }
+  const QRectF expanded =
+      captureCanvasRect(QSizeF(200, 100), {text}, CanvasBoundaryMode::Framed);
+  if (expanded.right() <= 200.0 || annotationTextLines(text).size() != 1) {
+    error = QStringLiteral(
+        "Committed zero-width text did not expand the canvas unbounded");
+    return false;
+  }
+
+  // And the painted pixels wrap, not just the layout: rendered at a dragged
+  // width, ink appears on a second line and never past the wrap width. The
+  // layout helpers wrapping while the painter split on newlines is exactly
+  // the break this would have caught.
+  CaptureData capture;
+  capture.monitor.scale = 1.0;
+  capture.monitor.pixelSize = {400, 200};
+  capture.source = QImage(400, 200, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(Qt::transparent);
+  capture.previewSize = capture.source.size();
+  Annotation painted = text;
+  painted.start = {20, 40};
+  painted.textWidth = 120.0;
+  painted.textBackground = TextBackground::Plain;
+  const QImage out = renderCapture(capture, QRectF(0, 0, 400, 200), {painted},
+                                   BackgroundStyle::None);
+  const QFontMetricsF painterMetrics(annotationTextFont(painted.size));
+  bool secondLineInk = false;
+  const int secondBaseline = qRound(40 + painterMetrics.lineSpacing());
+  for (int x = 20; x < 140 && !secondLineInk; ++x)
+    secondLineInk = out.pixelColor(x, secondBaseline - 2).alpha() > 0;
+  if (!secondLineInk) {
+    error = QStringLiteral("Rendered text did not paint a wrapped second line");
+    return false;
+  }
+  for (int x = 170; x < 400; ++x) {
+    if (out.pixelColor(x, qRound(40 - painterMetrics.ascent() / 2)).alpha() >
+        0) {
+      error = QStringLiteral("Rendered text ran past its wrap width");
+      return false;
+    }
+  }
+  return true;
+}
+
 bool runTextPillRenderingCheck(QString &error) {
   error = QStringLiteral("Text pill rendering check failed");
   CaptureData capture;
@@ -7724,6 +8126,18 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 11;
   }
+  if (!runDraftPillStaysPutCheck(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 12;
+  }
+  if (!runTextVerticalOverrunHandleCheck(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 13;
+  }
+  if (!runTextOverrunHandleCheck(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 35;
+  }
   if (!runTextClickAwayCommitCheck(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 87;
@@ -7779,6 +8193,10 @@ int main(int argc, char **argv) {
   if (!runTextFontSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 128;
+  }
+  if (!runTextWrapRenderingCheck(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 125;
   }
   if (!runTextPillRenderingCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;

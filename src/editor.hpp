@@ -793,6 +793,9 @@ private:
   bool textEditPill_ = false;
   /// How many lines the current text entry has room for (see beginText).
   int textLineCapacity_ = 1;
+  /// Wrap width of the text being typed, in image px; 0 wraps at the canvas
+  /// edge. Carried onto the layer when the text is committed.
+  qreal textEditWrapWidth_ = 0.0;
   bool textCaretOn_ = true;
   QTimer textCaretTimer_;
   QElapsedTimer nudgeTimer_;

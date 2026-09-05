@@ -67,10 +67,66 @@ QFont annotationTextFont(qreal size, TextFont textFont) {
   return font;
 }
 
-QRectF annotationTextBounds(const Annotation &annotation) {
+qreal annotationTextWrapWidth(const Annotation &annotation,
+                              qreal canvasWidth) {
+  if (annotation.textWidth > 0.0)
+    return annotation.textWidth;
+  if (canvasWidth <= 0.0)
+    return 0.0;
+  // Room left before the right edge. Narrower than this and the text would be
+  // wrapping to a sliver, so leave it on one line and let it run.
+  const qreal room = canvasWidth - annotation.start.x();
+  return room >= kMinimumTextWrapWidth ? room : 0.0;
+}
+
+QStringList annotationTextLines(const Annotation &annotation,
+                                qreal canvasWidth) {
+  const QStringList paragraphs = annotation.text.split('\n');
+  const qreal wrap = annotationTextWrapWidth(annotation, canvasWidth);
+  if (wrap <= 0.0)
+    return paragraphs;
   const QFontMetricsF metrics(
       annotationTextFont(annotation.size, annotation.textFont));
-  const QStringList lines = annotation.text.split('\n');
+  QStringList lines;
+  for (const QString &paragraph : paragraphs) {
+    if (metrics.horizontalAdvance(paragraph) <= wrap) {
+      lines.push_back(paragraph);
+      continue;
+    }
+    // Break on spaces, and only mid-word when a single word cannot fit, so a
+    // long URL still wraps instead of running off the capture.
+    QString line;
+    for (const QString &word : paragraph.split(' ')) {
+      const QString candidate = line.isEmpty() ? word : line + ' ' + word;
+      if (metrics.horizontalAdvance(candidate) <= wrap) {
+        line = candidate;
+        continue;
+      }
+      if (!line.isEmpty()) {
+        lines.push_back(line);
+        line.clear();
+      }
+      QString rest = word;
+      while (metrics.horizontalAdvance(rest) > wrap && rest.size() > 1) {
+        int fit = 1;
+        while (fit < rest.size() &&
+               metrics.horizontalAdvance(rest.left(fit + 1)) <= wrap)
+          ++fit;
+        lines.push_back(rest.left(fit));
+        rest = rest.mid(fit);
+      }
+      line = rest;
+    }
+    lines.push_back(line);
+  }
+  return lines;
+}
+
+QRectF annotationTextBounds(const Annotation &annotation,
+                           qreal canvasWidth) {
+  const QFontMetricsF metrics(
+      annotationTextFont(annotation.size, annotation.textFont));
+  const QStringList lines = annotationTextLines(annotation, canvasWidth);
   qreal widestLine = 0.0;
   for (const QString &line : lines)
     widestLine = std::max(widestLine, metrics.horizontalAdvance(line));
@@ -416,7 +472,8 @@ QVector<WindowTarget> parseWindows(const QByteArray &json,
   return result;
 }
 
-void drawAnnotation(QPainter &painter, const Annotation &annotation) {
+void drawAnnotation(QPainter &painter, const Annotation &annotation,
+                    qreal canvasWidth = 0.0) {
   // Redactions replace source pixels in renderCapture before ordinary vector
   // annotations are painted. They must never be approximated by a translucent
   // overlay here because that could leave recoverable source data in exports.
@@ -524,7 +581,7 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation) {
   if (annotation.textBackground == TextBackground::Pill) {
     // A cream pill under the glyphs keeps text readable on any capture or
     // shape beneath it (the default text background).
-    const QRectF pill = annotationTextBounds(annotation);
+    const QRectF pill = annotationTextBounds(annotation, canvasWidth);
     const qreal radius = std::min(pill.height() / 4.0, 6.0);
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(248, 245, 235));
@@ -534,7 +591,7 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation) {
   painter.setPen(annotation.color);
   painter.setBrush(Qt::NoBrush);
   const QFontMetricsF metrics(font);
-  const QStringList lines = annotation.text.split('\n');
+  const QStringList lines = annotationTextLines(annotation, canvasWidth);
   if (annotation.textBackground == TextBackground::Outline) {
     // A white halo whatever the color: screenshots are mostly light UI, where
     // a dark halo reads as a drop shadow rather than a cut-out, and white
@@ -711,8 +768,9 @@ QRect pixelSelection(const CaptureData &capture, const QRectF &selection) {
 
 } // namespace
 
-void paintAnnotation(QPainter &painter, const Annotation &annotation) {
-  drawAnnotation(painter, annotation);
+void paintAnnotation(QPainter &painter, const Annotation &annotation,
+                     qreal canvasWidth) {
+  drawAnnotation(painter, annotation, canvasWidth);
 }
 
 QPainterPath spotlightPath(const Annotation &annotation) {
