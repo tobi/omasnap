@@ -100,7 +100,19 @@ int main(int argc, char **argv) {
   QCoreApplication::setApplicationName(QStringLiteral("omasnap"));
   QCoreApplication::setApplicationVersion(QString::fromLatin1(OMASNAP_VERSION));
   QCoreApplication::setOrganizationName(QStringLiteral("Omarchy"));
-  qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
+  // The overlay is a layer surface, but a pin is an ordinary compositor
+  // window the compositor floats and places; forcing layer-shell on the
+  // whole process would map the pin as a fullscreen overlay instead.
+  bool pinInvocation = false;
+  for (int index = 1; index < argc; ++index)
+    pinInvocation = pinInvocation || qstrcmp(argv[index], "--pin") == 0;
+  if (pinInvocation) {
+    // Unset rather than merely not set: a pin spawned from the editor
+    // inherits the editor's environment, layer-shell included.
+    qunsetenv("QT_WAYLAND_SHELL_INTEGRATION");
+  } else {
+    qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
+  }
   // Omarchy exports QT_QPA_PLATFORMTHEME=gtk3 session-wide. Honouring it
   // loads the qgtk3 plugin, which initialises GTK inside this process
   // (measured 81-112 ms of QApplication construction, plus ~20-24 MiB of

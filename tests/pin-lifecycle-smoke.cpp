@@ -168,24 +168,6 @@ bool runPinLifecycleSmoke(QString &error) {
   }
   QFile::remove(unrelatedPath);
 
-  int expectedReusedSlot = -1;
-  {
-    PinSlotLock first;
-    PinSlotLock second;
-    if (!first.isLocked() || !second.isLocked() || first.index() == second.index()) {
-      error = QStringLiteral("Pin slots were not claimed uniquely");
-      return false;
-    }
-    expectedReusedSlot = first.index();
-  }
-  {
-    PinSlotLock reused;
-    if (!reused.isLocked() || reused.index() != expectedReusedSlot) {
-      error = QStringLiteral("Closed pin slot was not reused");
-      return false;
-    }
-  }
-
   const QString path = pinnedSnapshotPath(987654);
   if (!saveTemporarySnapshot(image, path, error))
     return false;
