@@ -4063,6 +4063,218 @@ bool runCanvasBoundaryModeSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+/** Fullscreen edit chrome is a workspace around the current canvas: a layer
+ *  may begin there and grow the document, while source tools, chrome, and the
+ *  strict Image boundary remain inert. */
+bool runOffCanvasCreationSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 400, 300};
+  capture.monitor.pixelSize = {400, 300};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(400, 300, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  capture.previewSize = capture.source.size();
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::Fullscreen);
+  editor.setSuppressSnapshots(true);
+  editor.resize(1200, 700);
+  editor.show();
+  application.processEvents();
+
+  const QRectF sourceCanvas(QPointF(), capture.previewSize);
+  const QRectF initialImage = editor.editImageRectForTest();
+  const QPoint outside(qRound(initialImage.left() - 180.0),
+                       qRound(initialImage.center().y()));
+  const QPoint inside(qRound(initialImage.left() + 120.0), outside.y());
+  if (outside.x() < 1 || initialImage.contains(outside) ||
+      !initialImage.contains(inside)) {
+    error = QStringLiteral("Off-canvas fixture had no fullscreen workspace");
+    return false;
+  }
+  const auto drag = [&](const QPoint &from, const QPoint &to) {
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, from);
+    QTest::mouseMove(&editor, to, 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, to);
+    application.processEvents();
+  };
+
+  // The start is in unused fullscreen space and the head is over the source.
+  QTest::keyClick(&editor, Qt::Key_A);
+  QTest::mouseMove(&editor, outside, 20);
+  application.processEvents();
+  if (editor.cursor().shape() != Qt::CrossCursor) {
+    error = QStringLiteral("Arrow did not advertise the off-canvas workspace");
+    return false;
+  }
+  drag(outside, inside);
+  if (editor.currentAnnotationsForTest().size() != 1 ||
+      editor.currentAnnotationsForTest().constFirst().kind !=
+          Annotation::Kind::Arrow ||
+      editor.currentAnnotationsForTest().constFirst().start.x() >= -100.0 ||
+      editor.currentAnnotationsForTest().constFirst().end.x() <= 0.0 ||
+      editor.currentCanvasForTest().left() >= 0.0 ||
+      editor.operationLog().constLast().type != Operation::Type::Annotate) {
+    error =
+        QStringLiteral("Arrow could not begin outside and point into canvas");
+    return false;
+  }
+  const Annotation arrow = editor.currentAnnotationsForTest().constFirst();
+
+  // Once the arrow grows the canvas, its outer tail is a normal place to add
+  // a label. This is the intended callout workflow, not a special arrow/text
+  // relationship: both remain ordinary undoable vector operations.
+  QTest::keyClick(&editor, Qt::Key_T);
+  const QPointF labelPoint = arrow.start + QPointF(8, -34);
+  QTest::mouseClick(
+      &editor, Qt::LeftButton, Qt::NoModifier,
+      editor.annotationPointToWidgetForTest(labelPoint).toPoint());
+  application.processEvents();
+  auto *textEditor =
+      qobject_cast<QPlainTextEdit *>(QApplication::focusWidget());
+  if (textEditor == nullptr) {
+    error = QStringLiteral("Arrow tail did not accept a text annotation");
+    return false;
+  }
+  QTest::keyClicks(textEditor, QStringLiteral("Outside note"));
+  QTest::keyClick(textEditor, Qt::Key_Return, Qt::ControlModifier);
+  application.processEvents();
+  if (editor.currentAnnotationsForTest().size() != 2 ||
+      editor.currentAnnotationsForTest().constLast().kind !=
+          Annotation::Kind::Text ||
+      annotationTextBounds(editor.currentAnnotationsForTest().constLast())
+              .left() >= 0.0 ||
+      editor.currentCanvasForTest() !=
+          captureCanvasRect(sourceCanvas.size(),
+                            editor.currentAnnotationsForTest()) ||
+      editor.renderCurrentOutput().size() !=
+          editor.currentCanvasForTest().size().toSize()) {
+    error = QStringLiteral("Off-canvas arrow label did not enter the output");
+    return false;
+  }
+
+  // The grown strip is canvas for vector paint, but it is not screenshot
+  // data. Redaction cannot begin there even after another layer made it part
+  // of the document.
+  QTest::keyClick(&editor, Qt::Key_D);
+  const QPoint sourceOutside = editor
+                                   .annotationPointToWidgetForTest(QPointF(
+                                       arrow.start.x(), arrow.start.y() + 80.0))
+                                   .toPoint();
+  const QPoint sourceInside =
+      editor
+          .annotationPointToWidgetForTest(QPointF(80.0, arrow.start.y() + 80.0))
+          .toPoint();
+  drag(sourceOutside, sourceInside);
+  if (editor.currentAnnotationsForTest().size() != 2) {
+    error = QStringLiteral("Redaction began in a grown background strip");
+    return false;
+  }
+
+  QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+  QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+  application.processEvents();
+  if (!editor.currentAnnotationsForTest().isEmpty() ||
+      editor.currentCanvasForTest() != sourceCanvas) {
+    error = QStringLiteral("Undo did not contract the off-canvas workflow");
+    return false;
+  }
+
+  // Press-to-place tools need an unclamped point too; otherwise every marker
+  // stamped in the surround would pile up on the old canvas edge.
+  QTest::keyClick(&editor, Qt::Key_C);
+  QTest::mouseMove(&editor, outside + QPoint(7, 0), 20);
+  QTest::mouseMove(&editor, outside, 20);
+  application.processEvents();
+  const QImage markerHover = editor.grab().toImage();
+  bool markerGhost = false;
+  for (int y = std::max(0, outside.y() - 30);
+       y <= std::min(markerHover.height() - 1, outside.y() + 20) &&
+       !markerGhost;
+       ++y) {
+    for (int x = std::max(0, outside.x() - 30);
+         x <= std::min(markerHover.width() - 1, outside.x() + 20); ++x) {
+      const QColor pixel = markerHover.pixelColor(x, y);
+      if (pixel.red() > 120 && pixel.red() > pixel.green() + 40 &&
+          pixel.red() > pixel.blue() + 20) {
+        markerGhost = true;
+        break;
+      }
+    }
+  }
+  if (editor.cursor().shape() != Qt::PointingHandCursor || !markerGhost) {
+    error = QStringLiteral("Off-canvas marker preview was not visible");
+    return false;
+  }
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, outside);
+  application.processEvents();
+  if (editor.currentAnnotationsForTest().size() != 1 ||
+      editor.currentAnnotationsForTest().constFirst().kind !=
+          Annotation::Kind::Marker ||
+      editor.currentAnnotationsForTest().constFirst().start.x() >= -100.0 ||
+      editor.currentCanvasForTest().left() >= 0.0) {
+    error = QStringLiteral("Marker placement clamped to the old canvas edge");
+    return false;
+  }
+  QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+  application.processEvents();
+
+  // Text can also be the first layer that grows a side, independently of an
+  // arrow having already made that position part of the canvas.
+  QTest::keyClick(&editor, Qt::Key_T);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, outside);
+  application.processEvents();
+  textEditor = qobject_cast<QPlainTextEdit *>(QApplication::focusWidget());
+  if (textEditor == nullptr) {
+    error = QStringLiteral("Text could not begin outside the current canvas");
+    return false;
+  }
+  QTest::keyClicks(textEditor, QStringLiteral("Standalone note"));
+  QTest::keyClick(textEditor, Qt::Key_Return, Qt::ControlModifier);
+  application.processEvents();
+  if (editor.currentAnnotationsForTest().size() != 1 ||
+      editor.currentAnnotationsForTest().constFirst().kind !=
+          Annotation::Kind::Text ||
+      annotationTextBounds(editor.currentAnnotationsForTest().constFirst())
+              .left() >= 0.0 ||
+      editor.currentCanvasForTest().left() >= 0.0) {
+    error = QStringLiteral("Standalone text did not grow the canvas");
+    return false;
+  }
+  QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+  application.processEvents();
+
+  // Screenshot-derived operations have nothing meaningful to do in the
+  // surround, and the narrow band occupied by editor chrome is never canvas.
+  QTest::keyClick(&editor, Qt::Key_D);
+  drag(outside, inside);
+  QTest::keyClick(&editor, Qt::Key_A);
+  const QRectF arrowButton =
+      editor.toolbarButtonRectForTest(QStringLiteral("tool-arrow"));
+  const QPoint chromeGap(outside.x(), qRound(arrowButton.bottom() + 2.0));
+  drag(chromeGap, inside);
+  if (!editor.currentAnnotationsForTest().isEmpty()) {
+    error = QStringLiteral("Source tool or editor chrome grew the canvas");
+    return false;
+  }
+
+  // Image is the explicit strict boundary: starting outside it must stay a
+  // no-op even for a tool that grows Framed and Overflow canvases.
+  QTest::keyClick(&editor, Qt::Key_G, Qt::ShiftModifier);
+  application.processEvents();
+  if (editor.currentCanvasBoundaryForTest() != CanvasBoundaryMode::Image) {
+    error = QStringLiteral("Off-canvas fixture did not enter Image boundary");
+    return false;
+  }
+  drag(outside, inside);
+  if (!editor.currentAnnotationsForTest().isEmpty() ||
+      editor.currentCanvasForTest() != sourceCanvas) {
+    error = QStringLiteral("Image boundary accepted an off-canvas start");
+    return false;
+  }
+  return true;
+}
+
 /** Runs the interaction and rendering smoke checks. */
 bool runSelectOutsideCanvasSmoke(QApplication &application, QString &error) {
   CaptureData capture;
@@ -7747,6 +7959,10 @@ int main(int argc, char **argv) {
   if (!runCanvasBoundaryModeSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 202;
+  }
+  if (!runOffCanvasCreationSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 203;
   }
   if (!runSelectOutsideCanvasSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

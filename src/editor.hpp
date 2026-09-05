@@ -416,6 +416,13 @@ private:
   /// baseImageRect transformed by the current view zoom and pan (content and
   /// annotations map through this). Equals baseImageRect at zoom 1.
   [[nodiscard]] QRectF editImageRect() const;
+  /// Fullscreen content band where a canvas-growing tool may begin outside
+  /// the current canvas, excluding the toolbar and bottom status chrome.
+  [[nodiscard]] QRectF annotationWorkspaceRect() const;
+  /// Whether the armed tool may start at this widget position: source-based
+  /// tools stay on the screenshot, while paint-producing tools may use the
+  /// canvas and its surrounding workspace.
+  [[nodiscard]] bool canStartAnnotationAt(const QPointF &position) const;
   /// The unmodified screenshot's frame inside the possibly-grown canvas.
   [[nodiscard]] QRectF sourceFrameWidgetRect() const;
   [[nodiscard]] qreal editScale() const;
