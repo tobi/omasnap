@@ -2,6 +2,7 @@
 #include "cli-path.hpp"
 #include "editor.hpp"
 #include "instance-lock.hpp"
+#include "output-config.hpp"
 #include "overlay-chrome.hpp"
 #include "pin.hpp"
 #include "recent-snaps.hpp"
@@ -10,8 +11,17 @@
 #include <LayerShellQt/Window>
 
 
+#include <QFileInfo>
 #include <QImageReader>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+#include <QTimer>
 #include <QApplication>
+
+#include <algorithm>
+#include <memory>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDir>
@@ -100,7 +110,47 @@ int main(int argc, char **argv) {
   QCoreApplication::setApplicationName(QStringLiteral("omasnap"));
   QCoreApplication::setApplicationVersion(QString::fromLatin1(OMASNAP_VERSION));
   QCoreApplication::setOrganizationName(QStringLiteral("Omarchy"));
-  qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
+  // The overlay is a layer surface, but a windowed editor is an ordinary
+  // compositor window the compositor tiles and floats; the shell
+  // integration must be chosen before Qt connects, so the decision reads
+  // the arguments and the config by hand. Only a file edit can be
+  // windowed: a fresh capture always selects on the fullscreen overlay and
+  // hands off afterward.
+  bool editorWindowArg = false;
+  bool editorOverlayArg = false;
+  bool fileEditArg = false;
+  for (int index = 1; index < argc; ++index) {
+    const char *arg = argv[index];
+    if (qstrcmp(arg, "--editor") == 0 && index + 1 < argc) {
+      editorWindowArg = editorWindowArg || qstrcmp(argv[index + 1], "window") == 0;
+      editorOverlayArg =
+          editorOverlayArg || qstrcmp(argv[index + 1], "overlay") == 0;
+      ++index;
+    } else if (qstrcmp(arg, "--pin") == 0) {
+      ++index;
+    } else if (qstrcmp(arg, "--file") == 0) {
+      fileEditArg = true;
+      ++index;
+    } else if (qstrcmp(arg, "--clipboard") == 0) {
+      fileEditArg = true;
+    } else if (arg[0] != '-') {
+      fileEditArg =
+          fileEditArg || (qstrcmp(arg, "smart") != 0 &&
+                          qstrcmp(arg, "region") != 0 &&
+                          qstrcmp(arg, "windows") != 0 &&
+                          qstrcmp(arg, "fullscreen") != 0);
+    }
+  }
+  const bool windowedEditorProcess =
+      !editorOverlayArg && fileEditArg &&
+      (editorWindowArg || loadEditorWindowMode(defaultConfigPath()));
+  if (windowedEditorProcess) {
+    // Unset rather than merely not set: a windowed editor spawned from the
+    // overlay inherits the overlay's environment, layer-shell included.
+    qunsetenv("QT_WAYLAND_SHELL_INTEGRATION");
+  } else {
+    qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
+  }
   // Omarchy exports QT_QPA_PLATFORMTHEME=gtk3 session-wide. Honouring it
   // loads the qgtk3 plugin, which initialises GTK inside this process
   // (measured 81-112 ms of QApplication construction, plus ~20-24 MiB of
@@ -178,6 +228,14 @@ int main(int argc, char **argv) {
       QStringLiteral("Show an image as a pinned always-visible layer."),
       QStringLiteral("path"));
   parser.addOption(pinOption);
+  const QCommandLineOption editorOption(
+      QStringLiteral("editor"),
+      QStringLiteral("Editor presentation: overlay (fullscreen, default) or "
+                     "window (a normal compositor window). Also configurable "
+                     "as [editor] mode in omasnap.conf; W switches a live "
+                     "editor between the two."),
+      QStringLiteral("mode"));
+  parser.addOption(editorOption);
   const QCommandLineOption scrollOption(
       QStringLiteral("scroll"),
       QStringLiteral("Capture a scrolling region and stitch it into one tall "
@@ -193,6 +251,17 @@ int main(int argc, char **argv) {
 
   QString filePath = parser.value(fileOption);
   const bool clipboardInput = parser.isSet(clipboardOption);
+
+  const QString editorModeArg = parser.value(editorOption).trimmed().toLower();
+  if (!editorModeArg.isEmpty() &&
+      editorModeArg != QStringLiteral("window") &&
+      editorModeArg != QStringLiteral("overlay")) {
+    qCritical() << "--editor takes window or overlay";
+    return 2;
+  }
+  const bool editorWindowMode =
+      editorModeArg == QStringLiteral("window") ||
+      (editorModeArg.isEmpty() && loadEditorWindowMode(defaultConfigPath()));
 
   QuickOutputMode quickOutputMode = QuickOutputMode::None;
   if (parser.isSet(copyOption) && parser.isSet(saveOption))
@@ -401,10 +470,141 @@ int main(int argc, char **argv) {
                              .arg(capture.windows.size());
   }
 
+  const QSize editingPreview = capture.previewSize;
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
                        restoredLog);
   startupTimingMark("CaptureEditor constructed");
   editor.setScreen(targetScreen);
+  if (windowedEditorProcess && editingImage) {
+    // An ordinary compositor window: the compositor manages it, and its own
+    // float toggle works either way. The overlay chrome carries over
+    // unchanged; only the surface role differs.
+    editor.setWindowedPresentation(true);
+    editor.setWindowedBackdropOpaque(
+        loadEditorWindowBackdropOpaque(defaultConfigPath()));
+    editor.setWindowTitle(
+        filePath.isEmpty() ? QStringLiteral("omasnap")
+                           : QStringLiteral("omasnap %1")
+                                 .arg(QFileInfo(filePath).fileName()));
+    // Size to the visible selection, not the pristine canvas: a handed-off
+    // capture keeps its whole monitor underneath, but the window should hug
+    // what is actually being annotated.
+    const QSizeF selectionSize = editor.currentSelection().size();
+    const QSize hugged =
+        selectionSize.isEmpty() ? editingPreview : selectionSize.toSize();
+    // The guide band's height depends on how wide the card may be, so
+    // measure it at the width this window will have.
+    const int legendHeight =
+        hotkeyLegendAnchoredSize(editorHotkeyEntries(),
+                                 std::max(392, hugged.width() + 100))
+            .height();
+    const QSize naturalSize =
+        editorWindowSize(hugged, targetScreen->availableGeometry().size(),
+                         legendHeight);
+    // A hard floor clamps interactive floating resizes where the toolbar
+    // still reads; a tiled window's compositor overrides the hint, and
+    // that path is accepted as the tiled look.
+    editor.setMinimumSize(640, 420);
+    editor.resize(naturalSize);
+    // Both rules registered before the window maps, so the compositor
+    // floats, centers, and keeps it opaque from the first frame instead of
+    // tiling briefly and popping out.
+    const bool floatingWindow = loadEditorWindowFloating(defaultConfigPath());
+    QProcess::execute(QStringLiteral("hyprctl"),
+                      {QStringLiteral("eval"),
+                       editorFloatRuleScript(floatingWindow)});
+    // Exempt from the desktop's window-opacity rules: an editor whose mat
+    // and capture ghost translucent when unfocused reads as broken.
+    QProcess::execute(
+        QStringLiteral("hyprctl"),
+        {QStringLiteral("eval"),
+         QStringLiteral("hl.window_rule({ name = \"omasnap-editor-opaque\", "
+                        "match = { title = \"^omasnap( .+)?$\" }, "
+                        "opacity = 1 })")});
+    editor.show();
+    editor.setFocus(Qt::ActiveWindowFocusReason);
+    if (floatingWindow) {
+      // Floating at the capture's natural size unless the config says
+      // tiled. Dispatched once the compositor lists the window: asked too
+      // early, a dispatch reports success and does nothing.
+      auto attempts = std::make_shared<int>(0);
+      QTimer *settle = new QTimer(&editor);
+      settle->setInterval(50);
+      QObject::connect(settle, &QTimer::timeout, &editor, [settle, attempts,
+                                                           naturalSize] {
+        ++*attempts;
+        const qint64 pid = QCoreApplication::applicationPid();
+        QProcess probe;
+        probe.start(QStringLiteral("hyprctl"),
+                    {QStringLiteral("-j"), QStringLiteral("clients")});
+        const bool hyprland = probe.waitForFinished(500);
+        const QByteArray clients = probe.readAllStandardOutput();
+        bool listed = false;
+        bool alreadyFloating = false;
+        if (hyprland) {
+          const QJsonArray parsed = QJsonDocument::fromJson(clients).array();
+          for (const QJsonValue &value : parsed) {
+            const QJsonObject client = value.toObject();
+            if (client.value(QStringLiteral("pid")).toInteger() == pid) {
+              listed = true;
+              alreadyFloating =
+                  client.value(QStringLiteral("floating")).toBool();
+              break;
+            }
+          }
+        }
+        if (listed) {
+          settle->stop();
+          // The map rule normally floats and centers the window already;
+          // these dispatches are the fallback for a compositor that
+          // ignored it. hl.dsp.window.float toggles, so a window the rule
+          // floated must not be dispatched back into the tiling.
+          if (alreadyFloating)
+            return;
+          const QString selector =
+              QStringLiteral("window = \"pid:%1\"").arg(pid);
+          QProcess::execute(
+              QStringLiteral("hyprctl"),
+              {QStringLiteral("dispatch"),
+               QStringLiteral("hl.dsp.window.float({ %1 })").arg(selector)});
+          QProcess::execute(
+              QStringLiteral("hyprctl"),
+              {QStringLiteral("dispatch"),
+               QStringLiteral(
+                   "hl.dsp.window.resize({ x = %1, y = %2, relative = "
+                   "false, %3 })")
+                   .arg(naturalSize.width())
+                   .arg(naturalSize.height())
+                   .arg(selector)});
+          // Centered in the workspace area, clear of bars, or a tall
+          // window's toolbar ends up under the top bar.
+          QProcess::execute(
+              QStringLiteral("hyprctl"),
+              {QStringLiteral("dispatch"),
+               QStringLiteral("hl.dsp.window.center({ %1 })").arg(selector)});
+          return;
+        }
+        if (!hyprland && qEnvironmentVariableIsSet("SWAYSOCK")) {
+          settle->stop();
+          QProcess::execute(
+              QStringLiteral("swaymsg"),
+              {QStringLiteral("[pid=%1] floating enable, resize set %2 %3, "
+                              "move position center")
+                   .arg(pid)
+                   .arg(naturalSize.width())
+                   .arg(naturalSize.height())});
+          return;
+        }
+        if (*attempts >= 10)
+          settle->stop();
+      });
+      settle->start();
+    }
+    return application.exec();
+  }
+  if (editorWindowMode && !editingImage)
+    editor.setWindowedHandoffOnEdit(captureMode !=
+                                    CaptureEditor::CaptureMode::Scroll);
   editor.setGeometry(targetScreen->geometry());
   editor.winId();
   QWindow *window = editor.windowHandle();

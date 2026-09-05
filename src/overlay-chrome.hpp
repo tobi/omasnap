@@ -72,6 +72,19 @@ QRectF drawModeBadge(QPainter &painter, const QRect &bounds,
 void drawHotkeyLegend(QPainter &painter, const QRect &bounds,
                       const QVector<QPair<QString, QString>> &entries);
 
+/// The size the key guide takes in its wide anchored form (a windowed
+/// editor's toolbar band) when it may be at most `maxWidth` wide: rows are
+/// added until the card fits.
+[[nodiscard]] QSize hotkeyLegendAnchoredSize(
+    const QVector<QPair<QString, QString>> &entries, qreal maxWidth);
+
+/// A wide key card a few rows tall, centered over `anchorAbove`: a compact
+/// window has no clear margin for the overlay's backgroundless column, so
+/// the windowed layout reserves this card room instead.
+void drawAnchoredHotkeyLegend(QPainter &painter, const QRect &bounds,
+                              const QVector<QPair<QString, QString>> &entries,
+                              const QRectF &anchorAbove);
+
 /// The instruction line along the bottom.
 void drawStatusPill(QPainter &painter, const QRect &bounds,
                     const QString &text);

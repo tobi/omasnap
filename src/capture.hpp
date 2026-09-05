@@ -316,6 +316,17 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
 [[nodiscard]] QString temporarySnapshotPath();
 [[nodiscard]] QString pinnedSnapshotPath(int index);
 void prunePinnedSnapshots();
+/** Private runtime path for handing a live edit to the other editor
+ *  presentation (overlay to window or back). */
+[[nodiscard]] QString editorHandoffPath();
+void pruneEditorHandoffs();
+/** Window size for a windowed editor: the capture at its logical size
+ *  plus the chrome, where `legendHeight` is the measured key guide band,
+ *  scaled down to fit inside `available` with a little margin, never
+ *  smaller than a usable floor. */
+[[nodiscard]] QSize editorWindowSize(const QSize &preview,
+                                     const QSize &available,
+                                     int legendHeight);
 /**
  * Writes `image` into the private runtime directory. `quality` is the Qt PNG
  * quality knob, which maps inversely onto zlib levels: -1 keeps the default

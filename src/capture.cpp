@@ -1442,6 +1442,45 @@ void prunePinnedSnapshots() {
   }
 }
 
+QString editorHandoffPath() {
+  return runtimePath(QStringLiteral("edit-%1-%2.png")
+                         .arg(QCoreApplication::applicationPid())
+                         .arg(QRandomGenerator::global()->generate64(), 16, 16,
+                              QChar('0')));
+}
+
+void pruneEditorHandoffs() {
+  const QString runtime = secureRuntimeDirectory();
+  if (runtime.isEmpty())
+    return;
+  const QDateTime cutoff = QDateTime::currentDateTime().addDays(-1);
+  const QFileInfoList stale =
+      QDir(runtime).entryInfoList({QStringLiteral("edit-*.png"),
+                                   QStringLiteral("edit-*.json")},
+                                  QDir::Files);
+  for (const QFileInfo &entry : stale) {
+    if (entry.lastModified() < cutoff)
+      QFile::remove(entry.absoluteFilePath());
+  }
+}
+
+QSize editorWindowSize(const QSize &preview, const QSize &available,
+                       int legendHeight) {
+  // The capture at its natural size plus the editor's chrome: the key
+  // guide band as measured, the toolbar and handle clearance, the status
+  // band below, and the mat margins, so the image reads at 100% in a
+  // window that hugs it and the guide never covers anything. Clamped to
+  // the screen for captures too large to hug.
+  QSize size(preview.width() + 128, preview.height() + legendHeight + 210);
+  const QSize room = available.isEmpty()
+                         ? QSize(1728, 1080)
+                         : QSize(qRound(available.width() * 0.9),
+                                 qRound(available.height() * 0.9));
+  if (size.width() > room.width() || size.height() > room.height())
+    size.scale(room, Qt::KeepAspectRatio);
+  return {std::max(size.width(), 640), std::max(size.height(), 420)};
+}
+
 bool savePinnedSnapshot(const QImage &image, const QString &path,
                         const QSize &logicalSize, QString &error) {
   if (!saveTemporarySnapshot(image, path, error))

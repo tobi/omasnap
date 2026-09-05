@@ -55,6 +55,46 @@ QString formatScreenshotFilename(const QString &pattern, const QDateTime &when,
   return name + QStringLiteral(".png");
 }
 
+bool loadEditorWindowMode(const QString &filePath) {
+  QSettings settings(filePath, QSettings::IniFormat);
+  return settings.value(QStringLiteral("editor/mode"))
+             .toString()
+             .trimmed()
+             .toLower() == QStringLiteral("window");
+}
+
+QString editorFloatRuleScript(bool floating) {
+  // Registered before the editor window maps: floated after the fact, the
+  // window tiles for a frame and visibly pops out. The named rule
+  // coalesces across editors, and a tiled config re-registers it disabled
+  // so a floating session's rule cannot leak into tiled use. The title
+  // pattern skips the pins, whose titles have no space after the name.
+  return floating ? QStringLiteral(
+                        "hl.window_rule({ name = \"omasnap-editor-float\", "
+                        "match = { title = \"^omasnap( .+)?$\" }, "
+                        "float = true, center = true })")
+                  : QStringLiteral(
+                        "hl.window_rule({ name = \"omasnap-editor-float\", "
+                        "match = { title = \"^omasnap( .+)?$\" }, "
+                        "enabled = false })");
+}
+
+bool loadEditorWindowFloating(const QString &filePath) {
+  QSettings settings(filePath, QSettings::IniFormat);
+  return settings.value(QStringLiteral("editor/window"))
+             .toString()
+             .trimmed()
+             .toLower() != QStringLiteral("tiled");
+}
+
+bool loadEditorWindowBackdropOpaque(const QString &filePath) {
+  QSettings settings(filePath, QSettings::IniFormat);
+  return settings.value(QStringLiteral("editor/backdrop"))
+             .toString()
+             .trimmed()
+             .toLower() != QStringLiteral("translucent");
+}
+
 QString defaultConfigPath() {
   return QStandardPaths::writableLocation(QStandardPaths::ConfigLocation) +
          QStringLiteral("/omasnap/omasnap.conf");
