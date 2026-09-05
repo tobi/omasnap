@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <QPainterPath>
 #include <QColor>
@@ -60,6 +61,7 @@ enum class SpotlightShape { Ellipse, Rectangle, RoundedRectangle };
 enum class RedactionStyle { Solid, Pixelate };
 enum class TextBackground { Plain, Pill, Outline };
 enum class TextFont { Neucha, JetBrainsMono, InterDisplay };
+enum class ArrowStyle { Standard, Pointy, Curved, Double };
 
 struct Annotation {
   enum class Kind {
@@ -92,7 +94,11 @@ struct Annotation {
   TextBackground textBackground = TextBackground::Pill;
   /// Typeface is a layer property so reopened and duplicated labels keep it.
   TextFont textFont = TextFont::Neucha;
+  ArrowStyle arrowStyle = ArrowStyle::Standard;
   quint64 id = 0;
+  /** Explicit quadratic Bezier control for Curved/Double arrows. Empty uses
+   *  the calibrated perpendicular-offset curve. */
+  std::optional<QPointF> curveControl = std::nullopt;
 
   bool operator==(const Annotation &) const = default;
 };
@@ -252,7 +258,21 @@ void describeFileCapture(CaptureData &capture, QImage image,
 [[nodiscard]] bool quickOutput(const QImage &image, QuickOutputMode mode,
                                QString &error);
 [[nodiscard]] bool copyTextToClipboard(const QString &text, QString &error);
-void paintAnnotation(QPainter &painter, const Annotation &annotation);
+/** Paints one annotation. `arrowDisplayScale` affects only the on-screen tail
+ *  legibility floor for Standard/Pointy arrows; exports use the default 1.0. */
+void paintAnnotation(QPainter &painter, const Annotation &annotation,
+                     qreal arrowDisplayScale = 1.0);
+/** Visual extent of an arrow, including its head and stroke. The optional
+ *  display scale matches the preview-only Standard/Pointy tail floor; canvas
+ *  growth and exports use the natural 1.0 default. */
+[[nodiscard]] QRectF arrowVisualBounds(const Annotation &annotation,
+                                       qreal displayScale = 1.0);
+/** The on-curve midpoint handle used to reshape Curved/Double arrows. */
+[[nodiscard]] QPointF arrowCurveHandlePoint(const Annotation &annotation);
+/** Shape-aware arrow hit test in annotation-space pixels. */
+[[nodiscard]] bool arrowContainsPoint(const Annotation &annotation,
+                                      const QPointF &point,
+                                      qreal tolerance = 0.0);
 [[nodiscard]] QPainterPath spotlightPath(const Annotation &annotation);
 void paintSpotlights(QPainter &painter, const QImage &source,
                      const QRectF &targetBounds, const QRectF &sourceRect,
@@ -264,7 +284,8 @@ void paintSpotlights(QPainter &painter, const QImage &source,
  */
 void paintDefaultLayer(QPainter &painter, const QImage &redacted,
                        const QRectF &logicalBounds,
-                       const QVector<Annotation> &annotations);
+                       const QVector<Annotation> &annotations,
+                       qreal arrowDisplayScale = 1.0);
 /** `customBackdrop` is the image drawn (cover-fit) for
  *  `BackgroundStyle::Custom`; a null image there paints nothing, same as
  *  `BackgroundStyle::None`. */

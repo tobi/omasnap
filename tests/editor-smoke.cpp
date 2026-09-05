@@ -18,6 +18,7 @@
 #include "text-band.hpp"
 #include "transform-smoke.hpp"
 #include "eyedropper.hpp"
+#include "icons.hpp"
 
 #include <QApplication>
 #include <QBuffer>
@@ -7470,6 +7471,651 @@ bool runAreaLastRegionSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+bool runArrowStyleSmoke(QApplication &application, QString &error) {
+  const std::array<QString, 4> iconActions{
+      QStringLiteral("tool-arrow-standard"),
+      QStringLiteral("tool-arrow-pointy"),
+      QStringLiteral("tool-arrow-curved"),
+      QStringLiteral("tool-arrow-double")};
+  const std::array<ArrowStyle, 4> styles{ArrowStyle::Standard,
+                                         ArrowStyle::Pointy, ArrowStyle::Curved,
+                                         ArrowStyle::Double};
+  const auto exactArrowIcon = [](ArrowStyle style) {
+    QImage image(36, 36, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    Annotation arrow;
+    arrow.kind = Annotation::Kind::Arrow;
+    arrow.start = {0, 0};
+    arrow.end = {100, 0};
+    arrow.color = Qt::white;
+    arrow.size = 5;
+    arrow.arrowStyle = style;
+    const QRectF natural = arrowVisualBounds(arrow);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.translate(QRectF(0, 0, 36, 36).center());
+    const qreal scale = 28.0 / natural.width();
+    painter.scale(scale, scale);
+    painter.translate(-natural.center());
+    paintAnnotation(painter, arrow);
+    return image;
+  };
+  std::array<QImage, 4> arrowIcons;
+  for (std::size_t index = 0; index < iconActions.size(); ++index) {
+    arrowIcons.at(index) =
+        QImage(36, 36, QImage::Format_ARGB32_Premultiplied);
+    arrowIcons.at(index).fill(Qt::transparent);
+    QPainter painter(&arrowIcons.at(index));
+    painter.setRenderHint(QPainter::Antialiasing);
+    drawToolbarIcon(painter, QRectF(0, 0, 36, 36), iconActions.at(index), {},
+                    Qt::white);
+    painter.end();
+    if (arrowIcons.at(index) != exactArrowIcon(styles.at(index))) {
+      error = QStringLiteral(
+          "Arrow toolbar icon did not use exact annotation geometry");
+      return false;
+    }
+  }
+  const auto visibleIconBounds = [](const QImage &image) {
+    QRect bounds;
+    for (int y = 0; y < image.height(); ++y) {
+      for (int x = 0; x < image.width(); ++x) {
+        if (image.pixelColor(x, y).alpha() > 32)
+          bounds |= QRect(x, y, 1, 1);
+      }
+    }
+    return bounds;
+  };
+  const QRect firstIconBounds = visibleIconBounds(arrowIcons.front());
+  for (const QImage &icon : arrowIcons) {
+    const QRect bounds = visibleIconBounds(icon);
+    if (bounds.width() < 27 || bounds.width() != firstIconBounds.width() ||
+        bounds.center().x() != firstIconBounds.center().x()) {
+      error = QStringLiteral(
+          "Arrow toolbar icons did not share one centered visible width");
+      return false;
+    }
+  }
+  for (std::size_t first = 0; first < arrowIcons.size(); ++first) {
+    for (std::size_t second = first + 1; second < arrowIcons.size(); ++second) {
+      if (arrowIcons.at(first) == arrowIcons.at(second)) {
+        error = QStringLiteral("Two arrow toolbar icons rendered identically");
+        return false;
+      }
+    }
+  }
+
+  Annotation arrow;
+  arrow.kind = Annotation::Kind::Arrow;
+  arrow.start = {30, 80};
+  arrow.end = {170, 80};
+  arrow.color = QColor(QStringLiteral("#ff375f"));
+  arrow.size = 5;
+
+  std::array<QImage, 4> rendered;
+  for (std::size_t index = 0; index < styles.size(); ++index) {
+    arrow.arrowStyle = styles.at(index);
+    rendered.at(index) = QImage(200, 120, QImage::Format_ARGB32_Premultiplied);
+    rendered.at(index).fill(Qt::transparent);
+    QPainter painter(&rendered.at(index));
+    painter.setRenderHint(QPainter::Antialiasing);
+    paintAnnotation(painter, arrow);
+  }
+  for (std::size_t first = 0; first < rendered.size(); ++first) {
+    for (std::size_t second = first + 1; second < rendered.size(); ++second) {
+      if (rendered.at(first) == rendered.at(second)) {
+        error = QStringLiteral("Two arrow styles rendered identically");
+        return false;
+      }
+    }
+  }
+
+  const auto rectNear = [](const QRectF &actual, const QRectF &expected,
+                           qreal tolerance = 0.01) {
+    return std::abs(actual.x() - expected.x()) <= tolerance &&
+           std::abs(actual.y() - expected.y()) <= tolerance &&
+           std::abs(actual.width() - expected.width()) <= tolerance &&
+           std::abs(actual.height() - expected.height()) <= tolerance;
+  };
+
+  arrow.arrowStyle = ArrowStyle::Standard;
+  const QRectF standardBounds = arrowVisualBounds(arrow);
+  if (!rectNear(standardBounds, QRectF(28.25, 63.75, 143.5, 32.5))) {
+    error = QStringLiteral("Standard arrow geometry drifted (%1,%2 %3x%4)")
+                .arg(standardBounds.x())
+                .arg(standardBounds.y())
+                .arg(standardBounds.width())
+                .arg(standardBounds.height());
+    return false;
+  }
+  arrow.arrowStyle = ArrowStyle::Pointy;
+  const QRectF pointyBounds = arrowVisualBounds(arrow);
+  if (!rectNear(pointyBounds, QRectF(30.0, 59.87, 140.0, 40.26)) ||
+      pointyBounds.height() <= standardBounds.height() ||
+      !arrowContainsPoint(arrow, QPointF(100, 80))) {
+    error = QStringLiteral("Pointy arrow did not use the swept-back geometry");
+    return false;
+  }
+
+  // The calibrated polygon rotates with the chord and keeps its full head on
+  // short arrows rather than shrinking into an unrecognizable triangle.
+  arrow.arrowStyle = ArrowStyle::Standard;
+  arrow.start = {80, 30};
+  arrow.end = {80, 170};
+  if (!rectNear(arrowVisualBounds(arrow),
+                QRectF(63.75, 28.25, 32.5, 143.5))) {
+    error = QStringLiteral("Standard arrow did not rotate its exact geometry");
+    return false;
+  }
+  arrow.start = {30, 80};
+  arrow.end = {40, 80};
+  if (!rectNear(arrowVisualBounds(arrow),
+                QRectF(28.25, 63.75, 13.5, 32.5))) {
+    error = QStringLiteral("Short arrow changed the calibrated head geometry");
+    return false;
+  }
+  arrow.end = {170, 80};
+
+  // Use generous body-aligned pick bands, not the narrow visible
+  // polygon/stroke alone.
+  if (!arrowContainsPoint(arrow, QPointF(100, 95.7)) ||
+      arrowContainsPoint(arrow, QPointF(100, 95.8))) {
+    error = QStringLiteral("Standard arrow pick band was not head-width based");
+    return false;
+  }
+  arrow.arrowStyle = ArrowStyle::Pointy;
+  if (!arrowContainsPoint(arrow, QPointF(100, 97.2)) ||
+      arrowContainsPoint(arrow, QPointF(100, 97.3))) {
+    error = QStringLiteral("Pointy arrow pick band was not head-width based");
+    return false;
+  }
+
+  arrow.arrowStyle = ArrowStyle::Curved;
+  const QPointF curveMidpoint(100, 62.5);
+  if (!arrowContainsPoint(arrow, curveMidpoint) ||
+      arrowContainsPoint(arrow, QPointF(100, 80)) ||
+      !arrowContainsPoint(arrow, QPointF(100, 80), 2.0)) {
+    error = QStringLiteral("Curved arrow did not follow the expected arc");
+    return false;
+  }
+  // One outer corner of the Double style's start V. It is deliberately far
+  // from the Curved style's shaft, so this checks the second head itself.
+  const QPoint doubleStartHeadCorner(35, 66);
+  if (rendered.at(2).pixelColor(doubleStartHeadCorner).alpha() > 8) {
+    error = QStringLiteral("Curved arrow unexpectedly had a start head");
+    return false;
+  }
+  arrow.arrowStyle = ArrowStyle::Double;
+  if (rendered.at(3).pixelColor(doubleStartHeadCorner).alpha() < 64) {
+    error = QStringLiteral("Double arrow did not draw its start head");
+    return false;
+  }
+
+  // The third handle is the visible t=.5 point, while the persisted point is
+  // the off-curve quadratic control. Both geometry and hit testing must use
+  // the override.
+  arrow.arrowStyle = ArrowStyle::Curved;
+  arrow.curveControl = QPointF(100, 20);
+  if (QLineF(arrowCurveHandlePoint(arrow), QPointF(100, 50)).length() > 0.001 ||
+      !rectNear(arrowVisualBounds(arrow),
+                QRectF(27.0, 47.0, 146.0, 37.150447), 0.02) ||
+      !arrowContainsPoint(arrow, QPointF(100, 65.7)) ||
+      arrowContainsPoint(arrow, QPointF(100, 65.8))) {
+    error = QStringLiteral("Custom arrow curve was not used consistently");
+    return false;
+  }
+  arrow.curveControl.reset();
+
+  const auto renderAtDisplayScale = [&](ArrowStyle style, qreal displayScale) {
+    arrow.arrowStyle = style;
+    QImage image(200, 120, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    paintAnnotation(painter, arrow, displayScale);
+    return image;
+  };
+  const auto tailSpan = [](const QImage &image, int x) {
+    int first = image.height();
+    int last = -1;
+    for (int y = 0; y < image.height(); ++y) {
+      if (image.pixelColor(x, y).alpha() <= 8)
+        continue;
+      first = std::min(first, y);
+      last = std::max(last, y);
+    }
+    return last >= first ? last - first + 1 : 0;
+  };
+  const QImage standardNatural = renderAtDisplayScale(ArrowStyle::Standard, 1);
+  const QImage standardFit = renderAtDisplayScale(ArrowStyle::Standard, 0.5);
+  const QImage standardCapped = renderAtDisplayScale(ArrowStyle::Standard, 0.1);
+  arrow.arrowStyle = ArrowStyle::Standard;
+  const QRectF standardFitBounds = arrowVisualBounds(arrow, 0.5);
+  if (standardNatural != rendered.at(0) ||
+      tailSpan(standardFit, 30) <= tailSpan(standardNatural, 30) ||
+      standardCapped != renderAtDisplayScale(ArrowStyle::Standard, 0.01) ||
+      !rectNear(standardFitBounds, QRectF(26.5, 62.0, 147.0, 36.0)) ||
+      standardFitBounds.left() >= standardBounds.left() ||
+      standardFitBounds.right() <= standardBounds.right() ||
+      arrowVisualBounds(arrow) != standardBounds ||
+      arrowVisualBounds(arrow, 1.0) != standardBounds) {
+    error = QStringLiteral(
+        "Standard preview bounds did not include the zoom-aware tail");
+    return false;
+  }
+  const QImage pointyNatural = renderAtDisplayScale(ArrowStyle::Pointy, 1);
+  const QImage pointyFit = renderAtDisplayScale(ArrowStyle::Pointy, 0.5);
+  const QImage pointyCapped = renderAtDisplayScale(ArrowStyle::Pointy, 0.1);
+  if (pointyNatural != rendered.at(1) ||
+      tailSpan(pointyFit, 30) <= tailSpan(pointyNatural, 30) ||
+      pointyCapped != renderAtDisplayScale(ArrowStyle::Pointy, 0.01) ||
+      arrowVisualBounds(arrow) != pointyBounds) {
+    error = QStringLiteral("Pointy preview tail changed export geometry");
+    return false;
+  }
+
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {800, 600};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#182030")));
+  capture.previewSize = capture.source.size();
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::Fullscreen);
+  editor.resize(800, 600);
+  editor.show();
+  application.processEvents();
+
+  const auto draw = [&](int y) {
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(240, y));
+    QTest::mouseMove(&editor, QPoint(560, y), 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(560, y));
+    application.processEvents();
+  };
+  QTest::keyClick(&editor, Qt::Key_A);
+  if (!editor.statusForTest().contains(QStringLiteral("Standard"))) {
+    error = QStringLiteral("Arming Arrow did not report Standard");
+    return false;
+  }
+  draw(210);
+  QTest::keyClick(&editor, Qt::Key_A);
+  draw(270);
+  QTest::keyClick(&editor, Qt::Key_A);
+  draw(330);
+  QTest::keyClick(&editor, Qt::Key_A);
+  draw(390);
+
+  QVector<ArrowStyle> committed;
+  for (const Operation &operation : editor.operationLog()) {
+    if (operation.type == Operation::Type::Annotate &&
+        operation.annotations.size() == 1 &&
+        operation.annotations.constFirst().kind == Annotation::Kind::Arrow)
+      committed.push_back(operation.annotations.constFirst().arrowStyle);
+  }
+  if (committed != QVector<ArrowStyle>{ArrowStyle::Standard, ArrowStyle::Pointy,
+                                       ArrowStyle::Curved,
+                                       ArrowStyle::Double}) {
+    error = QStringLiteral("Repeated A did not cycle all four arrow styles");
+    return false;
+  }
+
+  // The same cycle restyles the one selected arrow, seeding from that
+  // arrow's own style instead of the style most recently used for drawing.
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(400, 210));
+  QTest::keyClick(&editor, Qt::Key_A);
+  QTest::keyClick(&editor, Qt::Key_A);
+  const Operation &restyled = editor.operationLog().constLast();
+  if (restyled.type != Operation::Type::Patch ||
+      restyled.annotations.size() != 1 ||
+      restyled.annotations.constFirst().arrowStyle != ArrowStyle::Pointy) {
+    error = QStringLiteral("Repeated A did not restyle the selected arrow");
+    return false;
+  }
+
+  // Select the Curved arrow at its default on-curve midpoint, then drag that
+  // third handle. The committed value is the back-solved Bezier control, not
+  // the visible midpoint itself.
+  QTest::keyClick(&editor, Qt::Key_V);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(400, 290));
+  application.processEvents();
+  const int beforeBend = editor.operationIndex();
+  // Begin 15 screen px off the handle: Curved/Double intentionally double
+  // the normal 9 px target radius for all three handles.
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(400, 305));
+  QTest::mouseMove(&editor, QPoint(420, 250), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(420, 250));
+  application.processEvents();
+  if (editor.operationIndex() != beforeBend + 1 ||
+      editor.operationLog().constLast().type != Operation::Type::Patch ||
+      editor.operationLog().constLast().annotations.size() != 1) {
+    error = QStringLiteral("Dragging the curve handle did not commit one patch");
+    return false;
+  }
+  const Annotation bent =
+      editor.operationLog().constLast().annotations.constFirst();
+  const qreal annotationPerScreen = (bent.end.x() - bent.start.x()) / 320.0;
+  const QPointF expectedHandle =
+      bent.start + QPointF(180, -80) * annotationPerScreen;
+  const QPointF expectedControl =
+      expectedHandle * 2.0 - (bent.start + bent.end) * 0.5;
+  if (bent.kind != Annotation::Kind::Arrow ||
+      bent.arrowStyle != ArrowStyle::Curved || !bent.curveControl ||
+      QLineF(*bent.curveControl, expectedControl).length() > 1.0 ||
+      QLineF(arrowCurveHandlePoint(bent), expectedHandle).length() > 1.0) {
+    error = QStringLiteral("Curve handle did not back-solve its control point");
+    return false;
+  }
+  const QPointF bentCurveControl =
+      bent.curveControl.value_or(QPointF());
+
+  // Moving the bent arrow translates all three defining points together.
+  const int beforeMove = editor.operationIndex();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(335, 270));
+  QTest::mouseMove(&editor, QPoint(345, 280), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(345, 280));
+  application.processEvents();
+  if (editor.operationIndex() != beforeMove + 1 ||
+      editor.operationLog().constLast().annotations.size() != 1) {
+    error = QStringLiteral("Moving a bent arrow did not commit one patch");
+    return false;
+  }
+  const Annotation moved =
+      editor.operationLog().constLast().annotations.constFirst();
+  if (!moved.curveControl) {
+    error = QStringLiteral("Moving an arrow dropped its curve control");
+    return false;
+  }
+  const QPointF movedCurveControl =
+      moved.curveControl.value_or(QPointF());
+  const QPointF movedStart = moved.start - bent.start;
+  const QPointF movedEnd = moved.end - bent.end;
+  const QPointF movedControl = movedCurveControl - bentCurveControl;
+  if (QLineF(movedStart, movedEnd).length() > 0.001 ||
+      QLineF(movedStart, movedControl).length() > 0.001) {
+    error = QStringLiteral("Moving an arrow left its curve control behind");
+    return false;
+  }
+
+  // Keep an explicit control fixed in canvas space when one endpoint is
+  // resized, so the same arc can be refined without its bend drifting.
+  const int beforeResize = editor.operationIndex();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(250, 355));
+  QTest::mouseMove(&editor, QPoint(270, 340), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(270, 340));
+  application.processEvents();
+  if (editor.operationIndex() != beforeResize + 1 ||
+      editor.operationLog().constLast().annotations.size() != 1) {
+    error = QStringLiteral("Resizing a bent arrow did not commit one patch");
+    return false;
+  }
+  const Annotation resized =
+      editor.operationLog().constLast().annotations.constFirst();
+  if (!resized.curveControl || resized.start == moved.start ||
+      resized.end != moved.end ||
+      QLineF(resized.curveControl.value_or(QPointF()), movedCurveControl)
+              .length() >
+          0.001) {
+    error = QStringLiteral("Endpoint resize changed the explicit arrow curve");
+    return false;
+  }
+
+  // Keep Arrow armed while editing its selected handle: this is the implicit
+  // layer-grab path that used to ignore Shift if it was already held before
+  // mouse-down. Constraining the middle handle removes its along-chord drift
+  // while preserving the perpendicular bend selected by the pointer.
+  QTest::keyClick(&editor, Qt::Key_A);
+  const QPointF arrowStartScreen(270, 340);
+  const QPointF arrowEndScreen(570, 340);
+  const qreal arrowScreenScale =
+      QLineF(resized.start, resized.end).length() /
+      QLineF(arrowStartScreen, arrowEndScreen).length();
+  const auto arrowPointFromScreen = [&](const QPointF &screenPoint) {
+    return resized.start +
+           (screenPoint - arrowStartScreen) * arrowScreenScale;
+  };
+  const auto arrowPointToScreen = [&](const QPointF &annotationPoint) {
+    return arrowStartScreen +
+           (annotationPoint - resized.start) / arrowScreenScale;
+  };
+  const QPoint curveHandleScreen =
+      arrowPointToScreen(arrowCurveHandlePoint(resized)).toPoint();
+  const QPointF rawCurveScreen(500, 230);
+  const QPointF rawCurvePoint = arrowPointFromScreen(rawCurveScreen);
+  const QPointF chord = resized.end - resized.start;
+  const QPointF chordMidpoint = (resized.start + resized.end) * 0.5;
+  const QPointF expectedCenteredHandle =
+      rawCurvePoint -
+      chord * (QPointF::dotProduct(rawCurvePoint - chordMidpoint, chord) /
+               QPointF::dotProduct(chord, chord));
+  const int beforeCenteredBend = editor.operationIndex();
+  QTest::keyPress(&editor, Qt::Key_Shift);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::ShiftModifier,
+                    curveHandleScreen);
+  QTest::mouseMove(&editor, rawCurveScreen.toPoint(), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::ShiftModifier,
+                      rawCurveScreen.toPoint());
+  QTest::keyRelease(&editor, Qt::Key_Shift);
+  application.processEvents();
+  if (editor.operationIndex() != beforeCenteredBend + 1 ||
+      editor.operationLog().constLast().type != Operation::Type::Patch ||
+      editor.operationLog().constLast().annotations.size() != 1) {
+    error =
+        QStringLiteral("Pre-held Shift did not resize the arrow curve handle");
+    return false;
+  }
+  const Annotation centered =
+      editor.operationLog().constLast().annotations.constFirst();
+  const QPointF centeredHandle = arrowCurveHandlePoint(centered);
+  if (QLineF(centeredHandle, expectedCenteredHandle).length() > 1.5 ||
+      std::abs(QPointF::dotProduct(centeredHandle - chordMidpoint, chord)) >
+          chord.manhattanLength() ||
+      QLineF(centeredHandle, chordMidpoint).length() < 20.0) {
+    error = QStringLiteral(
+        "Shift did not center the curved-arrow bend without flattening it");
+    return false;
+  }
+
+  // The same pre-held gesture on an endpoint snaps to the nearest 45-degree
+  // ray immediately; it must not require releasing and pressing Shift again.
+  const QPointF rawArrowEndScreen(620, 400);
+  const QPointF rawArrowEnd = arrowPointFromScreen(rawArrowEndScreen);
+  const QPointF expectedArrowEnd = constrainedCreationEndpoint(
+      CaptureEditor::Tool::Line, centered.start, rawArrowEnd);
+  const int beforeShiftArrowResize = editor.operationIndex();
+  QTest::keyPress(&editor, Qt::Key_Shift);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::ShiftModifier,
+                    arrowEndScreen.toPoint());
+  QTest::mouseMove(&editor, rawArrowEndScreen.toPoint(), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::ShiftModifier,
+                      rawArrowEndScreen.toPoint());
+  QTest::keyRelease(&editor, Qt::Key_Shift);
+  application.processEvents();
+  if (editor.operationIndex() != beforeShiftArrowResize + 1 ||
+      editor.operationLog().constLast().annotations.size() != 1) {
+    error = QStringLiteral("Pre-held Shift did not resize the arrow endpoint");
+    return false;
+  }
+  const Annotation snappedArrow =
+      editor.operationLog().constLast().annotations.constFirst();
+  if (snappedArrow.start != centered.start ||
+      QLineF(snappedArrow.end, expectedArrowEnd).length() > 1.5) {
+    error = QStringLiteral("Pre-held Shift did not snap the arrow endpoint");
+    return false;
+  }
+
+  // Exercise the identical implicit-grab path for a Line. Drawing it leaves
+  // Line armed; clicking the shaft selects it, then Shift is held before the
+  // endpoint press.
+  QTest::keyClick(&editor, Qt::Key_L);
+  const QPointF lineStartScreen(220, 430);
+  const QPointF lineEndScreen(480, 455);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier,
+                    lineStartScreen.toPoint());
+  QTest::mouseMove(&editor, lineEndScreen.toPoint(), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      lineEndScreen.toPoint());
+  application.processEvents();
+  const Annotation lineBefore =
+      editor.operationLog().constLast().annotations.constFirst();
+  if (lineBefore.kind != Annotation::Kind::Line) {
+    error = QStringLiteral("Could not set up the line endpoint Shift check");
+    return false;
+  }
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                    ((lineStartScreen + lineEndScreen) * 0.5).toPoint());
+  application.processEvents();
+  const qreal lineScreenScale =
+      QLineF(lineBefore.start, lineBefore.end).length() /
+      QLineF(lineStartScreen, lineEndScreen).length();
+  const QPointF rawLineEndScreen(620, 500);
+  const QPointF rawLineEnd =
+      lineBefore.start +
+      (rawLineEndScreen - lineStartScreen) * lineScreenScale;
+  const QPointF expectedLineEnd = constrainedCreationEndpoint(
+      CaptureEditor::Tool::Line, lineBefore.start, rawLineEnd);
+  const int beforeShiftLineResize = editor.operationIndex();
+  QTest::keyPress(&editor, Qt::Key_Shift);
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::ShiftModifier,
+                    lineEndScreen.toPoint());
+  QTest::mouseMove(&editor, rawLineEndScreen.toPoint(), 20);
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::ShiftModifier,
+                      rawLineEndScreen.toPoint());
+  QTest::keyRelease(&editor, Qt::Key_Shift);
+  application.processEvents();
+  if (editor.operationIndex() != beforeShiftLineResize + 1 ||
+      editor.operationLog().constLast().annotations.size() != 1) {
+    error = QStringLiteral("Pre-held Shift did not resize the line endpoint");
+    return false;
+  }
+  const Annotation snappedLine =
+      editor.operationLog().constLast().annotations.constFirst();
+  if (snappedLine.start != lineBefore.start ||
+      QLineF(snappedLine.end, expectedLineEnd).length() > 1.5) {
+    error = QStringLiteral("Pre-held Shift did not snap the line endpoint");
+    return false;
+  }
+
+  QTemporaryDir directory;
+  if (!directory.isValid()) {
+    error = QStringLiteral("Could not create arrow log directory");
+    return false;
+  }
+  OperationLog saved;
+  saved.ops = editor.operationLog();
+  saved.index = editor.operationIndex();
+  saved.previewSize = capture.previewSize;
+  const QString path =
+      QDir(directory.path()).filePath(QStringLiteral("arrows.json"));
+  if (!saveOperationLog(path, saved, error))
+    return false;
+  OperationLog loaded;
+  if (!loadOperationLog(path, loaded, error) || loaded.ops != saved.ops) {
+    error = QStringLiteral("Arrow state did not survive operation-log reload");
+    return false;
+  }
+  const bool loadedCurve = std::ranges::any_of(
+      loaded.ops, [](const Operation &operation) {
+        return std::ranges::any_of(
+            operation.annotations, [](const Annotation &annotation) {
+              return annotation.kind == Annotation::Kind::Arrow &&
+                     annotation.curveControl.has_value();
+            });
+      });
+  if (!loadedCurve) {
+    error = QStringLiteral("Custom arrow curve was missing after log reload");
+    return false;
+  }
+  editor.close();
+  application.processEvents();
+
+  // A mixed multi-selection applies one common next style to every arrow,
+  // leaves non-arrows alone, and records the whole restyle as one undo step.
+  Annotation firstArrow;
+  firstArrow.kind = Annotation::Kind::Arrow;
+  firstArrow.start = {100, 180};
+  firstArrow.end = {300, 180};
+  firstArrow.color = QColor(QStringLiteral("#ff375f"));
+  firstArrow.size = 5;
+  firstArrow.id = 1;
+  Annotation secondArrow = firstArrow;
+  secondArrow.start = {380, 300};
+  secondArrow.end = {650, 300};
+  secondArrow.color = QColor(QStringLiteral("#64d2ff"));
+  secondArrow.id = 2;
+  Annotation rectangle;
+  rectangle.kind = Annotation::Kind::Rectangle;
+  rectangle.start = {330, 90};
+  rectangle.end = {460, 150};
+  rectangle.color = QColor(QStringLiteral("#30d158"));
+  rectangle.size = 4;
+  rectangle.id = 3;
+
+  OperationLog groupLog;
+  for (const Annotation &annotation :
+       {firstArrow, secondArrow, rectangle}) {
+    Operation annotate;
+    annotate.type = Operation::Type::Annotate;
+    annotate.annotations = {annotation};
+    groupLog.ops.push_back(std::move(annotate));
+  }
+  groupLog.index = static_cast<int>(groupLog.ops.size());
+  groupLog.nextId = 4;
+  groupLog.previewSize = capture.previewSize;
+  CaptureEditor groupEditor(capture, CaptureEditor::CaptureMode::Fullscreen,
+                            QuickOutputMode::None, groupLog);
+  groupEditor.setSuppressSnapshots(true);
+  groupEditor.resize(800, 600);
+  groupEditor.show();
+  application.processEvents();
+  const QImage beforeGroupRestyle = groupEditor.renderCurrentOutput();
+  QTest::keyClick(&groupEditor, Qt::Key_A, Qt::ControlModifier);
+  QTest::keyClick(&groupEditor, Qt::Key_A); // arm Arrow
+  const int beforeGroupPatch = groupEditor.operationIndex();
+  QTest::keyClick(&groupEditor, Qt::Key_A); // cycle the selection
+  application.processEvents();
+  if (groupEditor.operationIndex() != beforeGroupPatch + 1 ||
+      groupEditor.operationLog().constLast().type != Operation::Type::Patch ||
+      groupEditor.operationLog().constLast().annotations.size() != 2 ||
+      !std::ranges::all_of(
+          groupEditor.operationLog().constLast().annotations,
+          [](const Annotation &annotation) {
+            return annotation.kind == Annotation::Kind::Arrow &&
+                   annotation.arrowStyle == ArrowStyle::Pointy;
+          })) {
+    error =
+        QStringLiteral("Repeated A did not restyle selected arrows in one patch");
+    return false;
+  }
+  const QImage afterGroupRestyle = groupEditor.renderCurrentOutput();
+  if (afterGroupRestyle == beforeGroupRestyle) {
+    error = QStringLiteral("Multi-arrow restyle did not change the output");
+    return false;
+  }
+  QTest::keyClick(&groupEditor, Qt::Key_Z, Qt::ControlModifier);
+  application.processEvents();
+  if (groupEditor.operationIndex() != beforeGroupPatch ||
+      groupEditor.renderCurrentOutput() != beforeGroupRestyle) {
+    error = QStringLiteral("One undo did not restore a multi-arrow restyle");
+    return false;
+  }
+  QTest::keyClick(&groupEditor, Qt::Key_Y, Qt::ControlModifier);
+  application.processEvents();
+  if (groupEditor.operationIndex() != beforeGroupPatch + 1 ||
+      groupEditor.renderCurrentOutput() != afterGroupRestyle) {
+    error = QStringLiteral("Redo did not restore a multi-arrow restyle");
+    return false;
+  }
+  groupEditor.close();
+  return true;
+}
+
+
 int main(int argc, char **argv) {
   // Re-executed by the instance-lock checks as the process holding the lock.
   const QString heldLockPath =
@@ -7558,6 +8204,10 @@ int main(int argc, char **argv) {
   if (!runTextAwareHighlighterEditorCheck(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 129;
+  }
+  if (!runArrowStyleSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 203;
   }
   if (!runSecureRedactionChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;

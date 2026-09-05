@@ -1,10 +1,54 @@
 #include "icons.hpp"
 
 #include "overlay-chrome.hpp"
+#include "capture.hpp"
 
 #include <QConicalGradient>
 #include <QPainter>
 #include <QPainterPath>
+
+namespace {
+constexpr qreal kArrowIconWidth = 28.0;
+constexpr qreal kArrowIconLength = 100.0;
+constexpr qreal kArrowIconSize = 5.0;
+
+bool arrowStyleForAction(const QString &action, ArrowStyle &style) {
+  if (action == QStringLiteral("tool-arrow-standard"))
+    style = ArrowStyle::Standard;
+  else if (action == QStringLiteral("tool-arrow-pointy"))
+    style = ArrowStyle::Pointy;
+  else if (action == QStringLiteral("tool-arrow-curved"))
+    style = ArrowStyle::Curved;
+  else if (action == QStringLiteral("tool-arrow-double"))
+    style = ArrowStyle::Double;
+  else
+    return false;
+  return true;
+}
+
+void drawArrowStyleIcon(QPainter &painter, const QRectF &bounds,
+                        ArrowStyle style, const QColor &color) {
+  Annotation arrow;
+  arrow.kind = Annotation::Kind::Arrow;
+  arrow.start = QPointF(0.0, 0.0);
+  arrow.end = QPointF(kArrowIconLength, 0.0);
+  arrow.color = color;
+  arrow.size = kArrowIconSize;
+  arrow.arrowStyle = style;
+
+  const QRectF natural = arrowVisualBounds(arrow);
+  if (natural.isEmpty())
+    return;
+  // Width is the invariant across styles. A single uniform transform keeps
+  // every calibrated polygon, curve, tangent and head angle identical to the
+  // annotation renderer instead of stretching a separate toolbar sketch.
+  const qreal scale = kArrowIconWidth / natural.width();
+  painter.translate(bounds.center());
+  painter.scale(scale, scale);
+  painter.translate(-natural.center());
+  paintAnnotation(painter, arrow);
+}
+} // namespace
 
 void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
                      const QString &action, const QString &label,
@@ -16,10 +60,20 @@ void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
   }
 
   painter.save();
+  ArrowStyle arrowStyle = ArrowStyle::Standard;
+  if (arrowStyleForAction(action, arrowStyle)) {
+    drawArrowStyleIcon(painter, bounds, arrowStyle, color);
+    painter.restore();
+    return;
+  }
+
   constexpr qreal iconSize = 19.0;
-  painter.translate(bounds.center().x() - iconSize / 2.0,
-                    bounds.center().y() - iconSize / 2.0);
-  painter.scale(iconSize / 24.0, iconSize / 24.0);
+  const qreal iconWidth = iconSize;
+  const qreal iconHeight = iconSize;
+  constexpr qreal logicalWidth = 24.0;
+  painter.translate(bounds.center().x() - iconWidth / 2.0,
+                    bounds.center().y() - iconHeight / 2.0);
+  painter.scale(iconWidth / logicalWidth, iconHeight / 24.0);
   painter.setPen(QPen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
   painter.setBrush(Qt::NoBrush);
 
@@ -31,10 +85,6 @@ void drawToolbarIcon(QPainter &painter, const QRectF &bounds,
     pointer.lineTo(9, 21);
     pointer.closeSubpath();
     painter.drawPath(pointer);
-  } else if (action == QStringLiteral("tool-arrow")) {
-    painter.drawLine(QPointF(7, 17), QPointF(17, 7));
-    painter.drawLine(QPointF(7, 7), QPointF(17, 7));
-    painter.drawLine(QPointF(17, 7), QPointF(17, 17));
   } else if (action == QStringLiteral("tool-line")) {
     painter.drawLine(QPointF(5, 19), QPointF(19, 5));
   } else if (action == QStringLiteral("tool-freehand")) {
