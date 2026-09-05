@@ -461,12 +461,22 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation) {
     if (annotation.points.size() < 2)
       return;
     QPainterPath stroke(annotation.points.first());
-    for (int index = 1; index + 1 < annotation.points.size(); ++index) {
-      const QPointF midpoint =
-          (annotation.points.at(index) + annotation.points.at(index + 1)) / 2.0;
-      stroke.quadTo(annotation.points.at(index), midpoint);
+    if (annotation.kind == Annotation::Kind::Freehand) {
+      // Release-time Chaikin points already describe the curve. Connecting
+      // them directly matches its geometry in preview, hit-testing and export
+      // instead of applying a second, unrelated quadratic approximation.
+      for (qsizetype index = 1; index < annotation.points.size(); ++index)
+        stroke.lineTo(annotation.points.at(index));
+    } else {
+      for (int index = 1; index + 1 < annotation.points.size(); ++index) {
+        const QPointF midpoint =
+            (annotation.points.at(index) + annotation.points.at(index + 1)) /
+            2.0;
+        stroke.quadTo(annotation.points.at(index), midpoint);
+      }
+      if (annotation.points.size() > 1)
+        stroke.lineTo(annotation.points.last());
     }
-    stroke.lineTo(annotation.points.last());
     painter.setBrush(Qt::NoBrush);
     if (annotation.kind == Annotation::Kind::Highlighter) {
       QColor ink = annotation.color;
@@ -1693,6 +1703,14 @@ QJsonObject annotationToJson(const Annotation &annotation) {
       points.push_back(pointArray(point));
     object.insert(QStringLiteral("points"), points);
   }
+  if (annotation.kind == Annotation::Kind::Freehand) {
+    QJsonArray rawPoints;
+    for (const QPointF &point : annotation.rawPoints)
+      rawPoints.push_back(pointArray(point));
+    object.insert(QStringLiteral("rawPoints"), rawPoints);
+    object.insert(QStringLiteral("smoothingLevel"),
+                  annotation.smoothingLevel);
+  }
   if (annotation.kind == Annotation::Kind::Redaction) {
     object.insert(QStringLiteral("redactionStyle"),
                   annotation.redactionStyle == RedactionStyle::Solid
@@ -1742,6 +1760,12 @@ bool annotationFromJson(const QJsonObject &object, Annotation &annotation,
   annotation.points.clear();
   for (const QJsonValue point : object.value(QStringLiteral("points")).toArray())
     annotation.points.push_back(pointFromArray(point));
+  annotation.rawPoints.clear();
+  for (const QJsonValue point :
+       object.value(QStringLiteral("rawPoints")).toArray())
+    annotation.rawPoints.push_back(pointFromArray(point));
+  annotation.smoothingLevel =
+      object.value(QStringLiteral("smoothingLevel")).toInt(0);
   const QString redactionStyle =
       object.value(QStringLiteral("redactionStyle")).toString();
   annotation.redactionStyle = redactionStyle == QStringLiteral("solid")
